@@ -1,0 +1,119 @@
+syntax = "proto3";
+
+package chat.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/api/annotations.proto";
+
+option go_package = "go-simple-chat/api/v1;chatv1";
+
+service ChatService {
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse) {
+    option (google.api.http) = {
+      get: "/v1/health"
+    };
+  }
+
+  // Auth/Registration
+  rpc Register(RegisterRequest) returns (RegisterResponse) {
+    option (google.api.http) = {
+      post: "/v1/register"
+      body: "*"
+    };
+  }
+
+  // Messaging
+  rpc SendMessage(SendMessageRequest) returns (SendMessageResponse) {
+    option (google.api.http) = {
+      post: "/v1/channels/{channel_id}/messages"
+      body: "*"
+    };
+  }
+
+  // Real-time bidirectional streaming for chat and presence
+  rpc BidiStreamChat(stream StreamMessageRequest) returns (stream StreamMessageResponse) {}
+
+  // Presence
+  rpc GetPresence(GetPresenceRequest) returns (GetPresenceResponse) {
+    option (google.api.http) = {
+      get: "/v1/users/{user_id}/presence"
+    };
+  }
+}
+
+message HealthCheckRequest {}
+message HealthCheckResponse {
+  string status = 1;
+}
+
+message RegisterRequest {
+  string username = 1;
+  bytes public_key = 2; // User's public key for E2E encryption info
+}
+
+message RegisterResponse {
+  string user_id = 1;
+  bytes certificate = 2; // Issued client certificate
+  bytes private_key = 3; // Issued client private key (if server generates it, which it does in our CA model)
+}
+
+message SendMessageRequest {
+  string channel_id = 1;
+  string content = 2;
+  string media_type = 3;
+  string media_url = 4;
+  string thread_id = 5;
+  string parent_id = 6;
+}
+
+message SendMessageResponse {
+  string message_id = 1;
+}
+
+message StreamMessageRequest {
+  oneof payload {
+    SendMessageRequest send_message = 1;
+    Heartbeat heartbeat = 2;
+  }
+}
+
+message StreamMessageResponse {
+  oneof payload {
+    MessageReceived message_received = 1;
+    PresenceEvent presence_event = 2;
+    ErrorEvent error = 3;
+  }
+}
+
+message Heartbeat {}
+
+message MessageReceived {
+  string message_id = 1;
+  string channel_id = 2;
+  string sender_id = 3;
+  string content = 4;
+  string media_type = 5;
+  string media_url = 6;
+  string thread_id = 7;
+  string parent_id = 8;
+  google.protobuf.Timestamp created_at = 9;
+}
+
+message PresenceEvent {
+  string user_id = 1;
+  bool online = 2;
+}
+
+message ErrorEvent {
+  string code = 1;
+  string message = 2;
+}
+
+message GetPresenceRequest {
+  string user_id = 1;
+}
+
+message GetPresenceResponse {
+  bool online = 1;
+  google.protobuf.Timestamp last_seen = 2;
+}
