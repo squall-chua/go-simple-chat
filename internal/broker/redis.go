@@ -3,45 +3,56 @@ package broker
 import (
 	"context"
 	"fmt"
+	"strings"
 
-	"go-simple-chat/internal/domain"
 	"github.com/redis/go-redis/v9"
 	"github.com/vmihailenco/msgpack/v5"
+	"go.uber.org/zap"
 )
 
 type RedisBroker struct {
-	client *redis.Client
+	client redis.UniversalClient
+	logger *zap.Logger
 }
 
-func NewRedisBroker(addr string) *RedisBroker {
-	client := redis.NewClient(&redis.Options{
-		Addr: addr,
-	})
-	return &RedisBroker{client: client}
+func NewRedisBroker(addr string, logger *zap.Logger) *RedisBroker {
+	addrs := strings.Split(addr, ",")
+	var client redis.UniversalClient
+	
+	if len(addrs) > 1 {
+		client = redis.NewClusterClient(&redis.ClusterOptions{
+			Addrs: addrs,
+		})
+	} else {
+		client = redis.NewClient(&redis.Options{
+			Addr: addrs[0],
+		})
+	}
+	return &RedisBroker{
+		client: client,
+		logger: logger,
+	}
 }
 
-func (b *RedisBroker) Publish(ctx context.Context, channelID string, msg *domain.Message) error {
-	data, err := msgpack.Marshal(msg)
+func (b *RedisBroker) Publish(ctx context.Context, topic string, data any) error {
+	payload, err := msgpack.Marshal(data)
 	if err != nil {
-		return fmt.Errorf("failed to marshal message: %w", err)
+		return fmt.Errorf("failed to marshal data: %w", err)
 	}
 
-	return b.client.Publish(ctx, "chat:"+channelID, data).Err()
+	return b.client.Publish(ctx, topic, payload).Err()
 }
 
-func (b *RedisBroker) Subscribe(ctx context.Context, channelID string, handler MessageHandler) error {
-	pubsub := b.client.Subscribe(ctx, "chat:"+channelID)
+func (b *RedisBroker) Subscribe(ctx context.Context, topic string, handler MessageHandler) error {
+	pubsub := b.client.Subscribe(ctx, topic)
 
 	go func() {
 		defer pubsub.Close()
 		ch := pubsub.Channel()
 		for msg := range ch {
-			var domainMsg domain.Message
-			if err := msgpack.Unmarshal([]byte(msg.Payload), &domainMsg); err != nil {
-				// Log error (should ideally pass a logger to the broker)
-				continue
+			if err := handler(context.Background(), []byte(msg.Payload)); err != nil {
+				b.logger.Error("handler error in redis subscribe", zap.Error(err))
 			}
-			_ = handler(context.Background(), &domainMsg)
 		}
 	}()
 

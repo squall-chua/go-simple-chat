@@ -2,14 +2,12 @@ package broker
 
 import (
 	"context"
-
-	"go-simple-chat/internal/domain"
 )
 
-type MessageHandler func(ctx context.Context, msg *domain.Message) error
+type MessageHandler func(ctx context.Context, data []byte) error
 
 type Broker interface {
-	Publish(ctx context.Context, channelID string, msg *domain.Message) error
-	Subscribe(ctx context.Context, channelID string, handler MessageHandler) error
+	Publish(ctx context.Context, topic string, data any) error
+	Subscribe(ctx context.Context, topic string, handler MessageHandler) error
 	Close() error
 }

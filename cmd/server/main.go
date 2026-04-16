@@ -10,7 +10,6 @@ import (
 	"go-simple-chat/internal/broker"
 	"go-simple-chat/internal/config"
 	"go-simple-chat/internal/crypto"
-	"go-simple-chat/internal/presence"
 	"go-simple-chat/internal/repository/mongo"
 	"go-simple-chat/internal/server"
 	"go-simple-chat/internal/service"
@@ -31,7 +30,7 @@ func main() {
 	defer stop()
 
 	// 1. Repositories
-	store, err := mongo.NewStore(ctx, cfg.MongoURI, "chat")
+	store, err := mongo.NewStore(ctx, cfg.MongoURI)
 	if err != nil {
 		logger.Fatal("failed to init mongo", zap.Error(err))
 	}
@@ -40,14 +39,15 @@ func main() {
 	userRepo, _ := mongo.NewUserRepo(ctx, store.DB)
 	chRepo, _ := mongo.NewChannelRepo(ctx, store.DB)
 	msgRepo, _ := mongo.NewMessageRepo(ctx, store.DB)
-	offlineRepo, _ := mongo.NewOfflineMessageRepo(ctx, store.DB)
+	readStateRepo, _ := mongo.NewReadStateRepo(ctx, store.DB)
+	challengeRepo, _ := mongo.NewChallengeRepo(ctx, store.DB)
 
 	// 2. Broker
 	var b broker.Broker
 	if cfg.BrokerType == "redis" {
-		b = broker.NewRedisBroker(cfg.RedisAddr)
+		b = broker.NewRedisBroker(cfg.RedisAddr, logger)
 	} else {
-		b = broker.NewLocalBroker()
+		b = broker.NewLocalBroker(logger)
 	}
 	defer b.Close()
 
@@ -60,7 +60,7 @@ func main() {
 	serverCertPath := filepath.Join(cfg.CertDir, "server.crt")
 	serverKeyPath := filepath.Join(cfg.CertDir, "server.key")
 	if _, err := os.Stat(serverCertPath); os.IsNotExist(err) {
-		certPEM, keyPEM, _ := ca.IssueUserCert("localhost", []string{"localhost", "127.0.0.1"})
+		certPEM, keyPEM, _ := ca.IssueUserCert(cfg.CertCN, cfg.CertDNS)
 		os.WriteFile(serverCertPath, certPEM, 0644)
 		os.WriteFile(serverKeyPath, keyPEM, 0600)
 	}
@@ -75,9 +75,9 @@ func main() {
 	}
 
 	// 4. Services
-	userService := service.NewUserService(userRepo, ca)
-	presenceService := presence.NewPresenceService(b)
-	chatService := service.NewChatService(msgRepo, chRepo, offlineRepo, b)
+	userService := service.NewUserService(userRepo, challengeRepo, ca)
+	presenceService := service.NewPresenceService(chRepo, b)
+	chatService := service.NewChatService(msgRepo, chRepo, readStateRepo, b)
 
 	// 5. gRPC Handler
 	handler := chatgrpc.NewChatHandler(userService, chatService, presenceService)

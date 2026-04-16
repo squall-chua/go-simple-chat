@@ -1,5 +1,7 @@
 certs
 design-system
+chat-client
+chat-server
 chat-service.md
 *.crt
 *.key

@@ -2,30 +2,37 @@ package repository
 
 import (
 	"context"
+	"time"
 
-	"go-simple-chat/internal/domain"
+	"go-simple-chat/internal/model"
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 type UserRepository interface {
-	Create(ctx context.Context, user *domain.User) error
-	GetByID(ctx context.Context, id string) (*domain.User, error)
-	GetByUsername(ctx context.Context, username string) (*domain.User, error)
+	Create(ctx context.Context, user *model.User) error
+	GetByID(ctx context.Context, id bson.ObjectID) (*model.User, error)
+	GetByUsername(ctx context.Context, username string) (*model.User, error)
 }
 
 type ChannelRepository interface {
-	Create(ctx context.Context, channel *domain.Channel) error
-	GetByID(ctx context.Context, id string) (*domain.Channel, error)
-	GetForUser(ctx context.Context, userID string) ([]*domain.Channel, error)
-	GetDirectChannel(ctx context.Context, user1, user2 string) (*domain.Channel, error)
+	Create(ctx context.Context, channel *model.Channel) error
+	GetByID(ctx context.Context, id bson.ObjectID) (*model.Channel, error)
+	GetForUser(ctx context.Context, userID bson.ObjectID) ([]*model.Channel, error)
+	GetDirectChannel(ctx context.Context, user1, user2 bson.ObjectID) (*model.Channel, error)
+	AddParticipants(ctx context.Context, channelID bson.ObjectID, userIDs []bson.ObjectID) error
 }
 
 type MessageRepository interface {
-	Create(ctx context.Context, msg *domain.Message) error
-	GetByChannel(ctx context.Context, channelID string, limit int, beforeID string) ([]*domain.Message, error)
+	Create(ctx context.Context, msg *model.Message) error
+	GetByChannel(ctx context.Context, channelID bson.ObjectID, limit int, beforeID bson.ObjectID) ([]*model.Message, error)
 }
 
-type OfflineMessageRepository interface {
-	Create(ctx context.Context, msg *domain.OfflineMessage) error
-	GetForUser(ctx context.Context, userID string) ([]*domain.OfflineMessage, error)
-	DeleteForUser(ctx context.Context, userID string) error
+type ReadStateRepository interface {
+	Upsert(ctx context.Context, userID, channelID, lastRead bson.ObjectID) (bool, error)
+	GetForUser(ctx context.Context, userID bson.ObjectID) (map[bson.ObjectID]bson.ObjectID, error)
+}
+
+type ChallengeRepository interface {
+	Store(ctx context.Context, userID, nonce string, ttl time.Duration) error
+	GetAndDelete(ctx context.Context, userID string) (string, error)
 }

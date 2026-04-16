@@ -27,7 +27,7 @@ func NewServerTLSConfig(caCertPath, serverCertPath, serverKeyPath string) (*tls.
 
 	return &tls.Config{
 		Certificates: []tls.Certificate{cert},
-		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientAuth:   tls.VerifyClientCertIfGiven,
 		ClientCAs:    caCertPool,
 		MinVersion:   tls.VersionTLS13,
 		NextProtos:   []string{"h2", "http/1.1"},

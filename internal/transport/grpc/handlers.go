@@ -1,12 +1,25 @@
 package grpc
 
 import (
+	"bytes"
 	"context"
+	"crypto/x509"
+	"encoding/base64"
+	"fmt"
 	chatv1 "go-simple-chat/api/v1"
-	"go-simple-chat/internal/domain"
 	"go-simple-chat/internal/metrics"
-	"go-simple-chat/internal/presence"
+	"go-simple-chat/internal/model"
 	"go-simple-chat/internal/service"
+	"sync"
+	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -14,13 +27,13 @@ type ChatHandler struct {
 	chatv1.UnimplementedChatServiceServer
 	userService     *service.UserService
 	chatService     *service.ChatService
-	presenceService *presence.PresenceService
+	presenceService *service.PresenceService
 }
 
 func NewChatHandler(
 	userService *service.UserService,
 	chatService *service.ChatService,
-	presenceService *presence.PresenceService,
+	presenceService *service.PresenceService,
 ) *ChatHandler {
 	return &ChatHandler{
 		userService:     userService,
@@ -29,8 +42,166 @@ func NewChatHandler(
 	}
 }
 
+func (h *ChatHandler) getUserIDFromContext(ctx context.Context) (bson.ObjectID, error) {
+	var clientCert *x509.Certificate
+
+	// 1. Try peer info (direct gRPC mTLS)
+	if p, ok := peer.FromContext(ctx); ok {
+		if tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo); ok && len(tlsInfo.State.PeerCertificates) > 0 {
+			clientCert = tlsInfo.State.PeerCertificates[0]
+		}
+	}
+
+	// 2. Try metadata (proxied gRPC via WebSocket)
+	if clientCert == nil {
+		if md, ok := metadata.FromIncomingContext(ctx); ok {
+			vals := md.Get("x-internal-client-cert")
+			if len(vals) > 0 {
+				der, err := base64.StdEncoding.DecodeString(vals[0])
+				if err == nil {
+					cert, err := x509.ParseCertificate(der)
+					if err == nil {
+						clientCert = cert
+					}
+				}
+			}
+		}
+	}
+
+	if clientCert == nil {
+		return bson.NilObjectID, status.Error(codes.Unauthenticated, "no client certificate")
+	}
+
+	// The CommonName is our UserID (as per IssueUserCert)
+	cn := clientCert.Subject.CommonName
+	oid, err := bson.ObjectIDFromHex(cn)
+	if err != nil {
+		return bson.NilObjectID, status.Errorf(codes.Unauthenticated, "invalid user id in certificate: %v", err)
+	}
+
+	// Verify user exists in DB
+	user, err := h.userService.GetUser(ctx, oid.Hex())
+	if err != nil {
+		return bson.NilObjectID, status.Error(codes.Unauthenticated, "user not found or inactive")
+	}
+
+	// Double-check: Public key pinning
+	// The public key in the cert must match the one in our DB
+	certPubKey, err := x509.MarshalPKIXPublicKey(clientCert.PublicKey)
+	if err != nil {
+		return bson.NilObjectID, status.Errorf(codes.Internal, "failed to marshal certificate public key: %v", err)
+	}
+
+	if !bytes.Equal(certPubKey, user.PublicKey) {
+		return bson.NilObjectID, status.Error(codes.Unauthenticated, "certificate public key mismatch")
+	}
+
+	return oid, nil
+}
+
 func (h *ChatHandler) HealthCheck(ctx context.Context, req *chatv1.HealthCheckRequest) (*chatv1.HealthCheckResponse, error) {
 	return &chatv1.HealthCheckResponse{Status: "ok"}, nil
+}
+
+func (h *ChatHandler) CreateChannel(ctx context.Context, req *chatv1.CreateChannelRequest) (*chatv1.CreateChannelResponse, error) {
+	creatorOID, err := h.getUserIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var participants []bson.ObjectID
+	for _, p := range req.Participants {
+		oid, err := bson.ObjectIDFromHex(p)
+		if err != nil {
+			return nil, fmt.Errorf("invalid participant id %s: %w", p, err)
+		}
+		participants = append(participants, oid)
+	}
+
+	isGroup := req.Type == chatv1.CreateChannelRequest_TYPE_GROUP
+	ch, err := h.chatService.CreateChannel(ctx, creatorOID, participants, req.Name, isGroup)
+	if err != nil {
+		return nil, err
+	}
+
+	return &chatv1.CreateChannelResponse{ChannelId: ch.ID.Hex()}, nil
+}
+
+func (h *ChatHandler) ListChannels(ctx context.Context, req *chatv1.ListChannelsRequest) (*chatv1.ListChannelsResponse, error) {
+	uOID, err := h.getUserIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	channels, err := h.chatService.GetUserChannels(ctx, uOID.Hex())
+	if err != nil {
+		return nil, err
+	}
+
+	var results []*chatv1.ChannelInfo
+	for _, ch := range channels {
+		var participants []string
+		for _, p := range ch.Participants {
+			participants = append(participants, p.Hex())
+		}
+
+		results = append(results, &chatv1.ChannelInfo{
+			Id:           ch.ID.Hex(),
+			Type:         string(ch.Type),
+			Participants: participants,
+			Name:         ch.Name,
+			LastReadId:   ch.LastReadID.Hex(),
+		})
+	}
+
+	return &chatv1.ListChannelsResponse{Channels: results}, nil
+}
+
+func (h *ChatHandler) MarkAsRead(ctx context.Context, req *chatv1.MarkAsReadRequest) (*emptypb.Empty, error) {
+	uOID, err := h.getUserIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	err = h.chatService.MarkAsRead(ctx, uOID.Hex(), req.ChannelId, req.MessageId)
+	if err != nil {
+		return nil, err
+	}
+
+	return &emptypb.Empty{}, nil
+}
+
+func (h *ChatHandler) GetMessages(ctx context.Context, req *chatv1.GetMessagesRequest) (*chatv1.GetMessagesResponse, error) {
+	uOID, err := h.getUserIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	msgs, err := h.chatService.GetMessages(ctx, uOID.Hex(), req.ChannelId, int(req.Limit), req.BeforeId)
+	if err != nil {
+		return nil, err
+	}
+
+	var results []*chatv1.MessageReceived
+	for _, m := range msgs {
+		results = append(results, toProtoMsg(m))
+	}
+
+	return &chatv1.GetMessagesResponse{Messages: results}, nil
+}
+
+func (h *ChatHandler) AddParticipant(ctx context.Context, req *chatv1.AddParticipantRequest) (*chatv1.AddParticipantResponse, error) {
+	uOID, err := h.getUserIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	err = h.chatService.AddParticipants(ctx, uOID.Hex(), req.ChannelId, req.UserIds)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	return &chatv1.AddParticipantResponse{Success: true}, nil
 }
 
 func (h *ChatHandler) Register(ctx context.Context, req *chatv1.RegisterRequest) (*chatv1.RegisterResponse, error) {
@@ -40,20 +211,57 @@ func (h *ChatHandler) Register(ctx context.Context, req *chatv1.RegisterRequest)
 	}
 
 	return &chatv1.RegisterResponse{
-		UserId:      user.ID,
+		UserId:      user.ID.Hex(),
 		Certificate: cert,
 		PrivateKey:  key,
 	}, nil
 }
 
+func (h *ChatHandler) GetChallenge(ctx context.Context, req *chatv1.GetChallengeRequest) (*chatv1.GetChallengeResponse, error) {
+	userID, nonce, err := h.userService.GetChallenge(ctx, req.Username)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, err.Error())
+	}
+	return &chatv1.GetChallengeResponse{
+		UserId: userID,
+		Nonce:  nonce,
+	}, nil
+}
+
+func (h *ChatHandler) RenewCertificate(ctx context.Context, req *chatv1.RenewCertificateRequest) (*chatv1.RenewCertificateResponse, error) {
+	cert, err := h.userService.RenewCertificate(ctx, req.UserId, req.Signature)
+	if err != nil {
+		return nil, status.Error(codes.Unauthenticated, err.Error())
+	}
+	return &chatv1.RenewCertificateResponse{
+		Certificate: cert,
+	}, nil
+}
+
 func (h *ChatHandler) SendMessage(ctx context.Context, req *chatv1.SendMessageRequest) (*chatv1.SendMessageResponse, error) {
-	metrics.TotalMessages.Inc()
-	msg := &domain.Message{
-		ChannelID: req.ChannelId,
-		SenderID:  "system", // In a real app, extract from mTLS context
+	channelOID, err := bson.ObjectIDFromHex(req.ChannelId)
+	if err != nil {
+		return nil, fmt.Errorf("invalid channel id: %w", err)
+	}
+
+	senderOID, err := h.getUserIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var medias []model.Media
+	for _, m := range req.Medias {
+		medias = append(medias, model.Media{
+			Type: m.Type,
+			URL:  m.Url,
+		})
+	}
+
+	msg := &model.Message{
+		ChannelID: channelOID,
+		SenderID:  senderOID,
 		Content:   req.Content,
-		MediaType: req.MediaType,
-		MediaURL:  req.MediaUrl,
+		Medias:    medias,
 		ThreadID:  req.ThreadId,
 		ParentID:  req.ParentId,
 	}
@@ -62,50 +270,167 @@ func (h *ChatHandler) SendMessage(ctx context.Context, req *chatv1.SendMessageRe
 		return nil, err
 	}
 
-	return &chatv1.SendMessageResponse{MessageId: msg.ID}, nil
+	metrics.TotalMessages.Inc()
+	return &chatv1.SendMessageResponse{MessageId: msg.ID.Hex()}, nil
 }
 
 func (h *ChatHandler) BidiStreamChat(stream chatv1.ChatService_BidiStreamChatServer) error {
-	// 1. Identification (In a real app, extract from mTLS context)
-	userID := "test_user" // Placeholder
 	ctx := stream.Context()
+	userID, err := h.getUserIDFromContext(ctx)
+	if err != nil {
+		return err
+	}
 
-	// 2. Set user as online
+	// 1. Set user as online
 	metrics.OnlineUsers.Inc()
 	defer metrics.OnlineUsers.Dec()
 
-	_ = h.presenceService.SetOnline(ctx, userID)
-	defer h.presenceService.SetOffline(context.Background(), userID)
+	_ = h.presenceService.SetOnline(ctx, userID.Hex())
+	defer h.presenceService.SetOffline(context.Background(), userID.Hex())
 
-	// 3. Deliver offline messages immediately
-	offlineMsgs, _ := h.chatService.GetOfflineMessages(ctx, userID)
-	for _, m := range offlineMsgs {
-		_ = stream.Send(&chatv1.StreamMessageResponse{
-			Payload: &chatv1.StreamMessageResponse_MessageReceived{
-				MessageReceived: toProtoMsg(m),
-			},
+	// 2. Subscription Management
+	channels, _ := h.chatService.GetUserChannels(ctx, userID.Hex())
+
+	// 3. State to protect stream.Send and deduplicate presence
+	var stateMu sync.Mutex
+	lastPresence := make(map[string]bool)
+
+	safeSend := func(res *chatv1.StreamMessageResponse) error {
+		stateMu.Lock()
+		defer stateMu.Unlock()
+		return stream.Send(res)
+	}
+
+	// 4. Outgoing Loop (Broker -> Stream)
+	subCtx, subCancel := context.WithCancel(ctx)
+	defer subCancel()
+
+	// 4a. Initial subscriptions for existing channels
+	for _, ch := range channels {
+		h.subscribeToChannel(subCtx, ch.ID.Hex(), safeSend, &stateMu, lastPresence)
+	}
+
+	// 4b. Personal signal topic for dynamic updates (New channels, etc.)
+	go func() {
+		_ = h.chatService.SubscribeToSystemSignals(subCtx, userID.Hex(), func(ctx context.Context, sig *model.SystemSignal) error {
+			if sig.Type == model.SignalNewChannel {
+				h.subscribeToChannel(subCtx, sig.ChannelID.Hex(), safeSend, &stateMu, lastPresence)
+			}
+			return nil
+		})
+	}()
+
+	// 5. Incoming Loop (Stream -> Server)
+	const heartbeatTimeout = 60 * time.Second
+	timer := time.NewTimer(heartbeatTimeout)
+	defer timer.Stop()
+
+	recvErr := make(chan error, 1)
+	go func() {
+		for {
+			req, err := stream.Recv()
+			if err != nil {
+				recvErr <- err
+				return
+			}
+
+			// Reset timeout on any valid activity from client
+			timer.Reset(heartbeatTimeout)
+
+			switch payload := req.Payload.(type) {
+			case *chatv1.StreamMessageRequest_SendMessage:
+				channelOID, err := bson.ObjectIDFromHex(payload.SendMessage.ChannelId)
+				if err != nil {
+					continue
+				}
+
+				var medias []model.Media
+				for _, m := range payload.SendMessage.Medias {
+					medias = append(medias, model.Media{
+						Type: m.Type,
+						URL:  m.Url,
+					})
+				}
+
+				msg := &model.Message{
+					ChannelID: channelOID,
+					SenderID:  userID,
+					Content:   payload.SendMessage.Content,
+					Medias:    medias,
+					ThreadID:  payload.SendMessage.ThreadId,
+					ParentID:  payload.SendMessage.ParentId,
+				}
+				_ = h.chatService.SendMessage(ctx, msg)
+			case *chatv1.StreamMessageRequest_Heartbeat:
+				_ = h.presenceService.SetOnline(ctx, userID.Hex())
+			}
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return status.Error(codes.DeadlineExceeded, "heartbeat timeout")
+	case err := <-recvErr:
+		return err
+	}
+}
+
+func toProtoMsg(m *model.Message) *chatv1.MessageReceived {
+	var medias []*chatv1.Media
+	for _, med := range m.Medias {
+		medias = append(medias, &chatv1.Media{
+			Type: med.Type,
+			Url:  med.URL,
 		})
 	}
 
-	// 4. Handle incoming messages and subscriptions
-	
-	// Subscriber for all user's channels (MVP: subscribe to a single global channel or specific ones)
-	// For demo, we'll just subscribe to any message published.
-	// In a real app, you'd iterate over user's channels.
-	
-	return stream.Context().Err() // Blocking for now to keep the stream open
-}
-
-func toProtoMsg(m *domain.Message) *chatv1.MessageReceived {
 	return &chatv1.MessageReceived{
-		MessageId: m.ID,
-		ChannelId: m.ChannelID,
-		SenderId:  m.SenderID,
+		MessageId: m.ID.Hex(),
+		ChannelId: m.ChannelID.Hex(),
+		SenderId:  m.SenderID.Hex(),
 		Content:   m.Content,
-		MediaType: m.MediaType,
-		MediaUrl:  m.MediaURL,
+		Medias:    medias,
 		ThreadId:  m.ThreadID,
 		ParentId:  m.ParentID,
 		CreatedAt: timestamppb.New(m.CreatedAt),
 	}
+}
+
+func (h *ChatHandler) subscribeToChannel(subCtx context.Context, channelID string, safeSend func(*chatv1.StreamMessageResponse) error, stateMu *sync.Mutex, lastPresence map[string]bool) {
+	// 1. Chat messages
+	go func() {
+		_ = h.chatService.SubscribeToChannel(subCtx, channelID, func(ctx context.Context, msg *model.Message) error {
+			return safeSend(&chatv1.StreamMessageResponse{
+				Payload: &chatv1.StreamMessageResponse_MessageReceived{
+					MessageReceived: toProtoMsg(msg),
+				},
+			})
+		})
+	}()
+
+	// 2. Presence events
+	go func() {
+		pTopic := "presence:" + channelID
+		_ = h.presenceService.SubscribeToChannelPresence(subCtx, pTopic, func(ctx context.Context, event *model.PresenceEvent) error {
+			stateMu.Lock()
+			current, ok := lastPresence[event.UserID]
+			if ok && current == event.Online {
+				stateMu.Unlock()
+				return nil
+			}
+			lastPresence[event.UserID] = event.Online
+			stateMu.Unlock()
+
+			return safeSend(&chatv1.StreamMessageResponse{
+				Payload: &chatv1.StreamMessageResponse_PresenceEvent{
+					PresenceEvent: &chatv1.PresenceEvent{
+						UserId: event.UserID,
+						Online: event.Online,
+					},
+				},
+			})
+		})
+	}()
 }

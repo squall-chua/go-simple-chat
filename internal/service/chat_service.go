@@ -6,35 +6,71 @@ import (
 	"time"
 
 	"go-simple-chat/internal/broker"
-	"go-simple-chat/internal/domain"
+	"go-simple-chat/internal/model"
 	"go-simple-chat/internal/repository"
+
+	"github.com/vmihailenco/msgpack/v5"
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 type ChatService struct {
-	msgRepo     repository.MessageRepository
-	chRepo      repository.ChannelRepository
-	offlineRepo repository.OfflineMessageRepository
-	broker      broker.Broker
+	msgRepo       repository.MessageRepository
+	chRepo        repository.ChannelRepository
+	readStateRepo repository.ReadStateRepository
+	broker        broker.Broker
 }
 
 func NewChatService(
 	msgRepo repository.MessageRepository,
 	chRepo repository.ChannelRepository,
-	offlineRepo repository.OfflineMessageRepository,
+	readStateRepo repository.ReadStateRepository,
 	broker broker.Broker,
 ) *ChatService {
 	return &ChatService{
-		msgRepo:     msgRepo,
-		chRepo:      chRepo,
-		offlineRepo: offlineRepo,
-		broker:      broker,
+		msgRepo:       msgRepo,
+		chRepo:        chRepo,
+		readStateRepo: readStateRepo,
+		broker:        broker,
 	}
 }
 
-func (s *ChatService) SendMessage(ctx context.Context, msg *domain.Message) error {
+func (s *ChatService) MarkAsRead(ctx context.Context, userID, channelID, messageID string) error {
+	uOID, err := bson.ObjectIDFromHex(userID)
+	if err != nil {
+		return err
+	}
+	chOID, err := bson.ObjectIDFromHex(channelID)
+	if err != nil {
+		return err
+	}
+	mOID, err := bson.ObjectIDFromHex(messageID)
+	if err != nil {
+		return err
+	}
+
+	// 1. Persist read state
+	updated, err := s.readStateRepo.Upsert(ctx, uOID, chOID, mOID)
+	if err != nil {
+		return err
+	}
+
+	// 2. Signal user's other devices only if the mark actually moved
+	if updated {
+		signal := &model.SystemSignal{
+			Type:      model.SignalReadUpdate,
+			ChannelID: chOID,
+			MessageID: mOID,
+		}
+		_ = s.broker.Publish(ctx, "signal:"+userID, signal)
+	}
+
+	return nil
+}
+
+func (s *ChatService) SendMessage(ctx context.Context, msg *model.Message) error {
 	msg.CreatedAt = time.Now()
-	if msg.ID == "" {
-		msg.ID = fmt.Sprintf("m_%d", time.Now().UnixNano())
+	if msg.ID.IsZero() {
+		msg.ID = bson.NewObjectID()
 	}
 
 	// 1. Persist message
@@ -43,53 +79,207 @@ func (s *ChatService) SendMessage(ctx context.Context, msg *domain.Message) erro
 	}
 
 	// 2. Publish to broker (for online users)
-	if err := s.broker.Publish(ctx, msg.ChannelID, msg); err != nil {
+	// Broker uses string as routing key
+	if err := s.broker.Publish(ctx, "chat:"+msg.ChannelID.Hex(), msg); err != nil {
 		return fmt.Errorf("failed to publish message: %w", err)
-	}
-
-	// 3. Handle offline messages
-	// Get channel participants to identify potential offline recipients
-	channel, err := s.chRepo.GetByID(ctx, msg.ChannelID)
-	if err != nil {
-		return fmt.Errorf("failed to get channel for offline delivery: %w", err)
-	}
-
-	for _, participantID := range channel.Participants {
-		if participantID == msg.SenderID {
-			continue
-		}
-		
-		// In a real system, we'd check presence here. For now, we store for everyone
-		// and the GetOfflineMessages call (on reconnect) will clear them.
-		offlineMsg := &domain.OfflineMessage{
-			ID:        fmt.Sprintf("om_%s_%s", participantID, msg.ID),
-			UserID:    participantID,
-			Message:   *msg,
-			ExpiresAt: time.Now().AddDate(0, 0, 30), // 30 days TTL
-		}
-		_ = s.offlineRepo.Create(ctx, offlineMsg)
 	}
 
 	return nil
 }
 
-func (s *ChatService) SubscribeToChannel(ctx context.Context, channelID string, handler broker.MessageHandler) error {
-	return s.broker.Subscribe(ctx, channelID, handler)
+func (s *ChatService) SubscribeToChannel(ctx context.Context, channelID string, handler func(context.Context, *model.Message) error) error {
+	return s.broker.Subscribe(ctx, "chat:"+channelID, func(ctx context.Context, data []byte) error {
+		var msg model.Message
+		if err := msgpack.Unmarshal(data, &msg); err != nil {
+			return nil
+		}
+		return handler(ctx, &msg)
+	})
 }
 
-func (s *ChatService) GetOfflineMessages(ctx context.Context, userID string) ([]*domain.Message, error) {
-	offlineMsgs, err := s.offlineRepo.GetForUser(ctx, userID)
+func (s *ChatService) GetUserChannels(ctx context.Context, userID string) ([]*model.Channel, error) {
+	uOID, err := bson.ObjectIDFromHex(userID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user id: %w", err)
+	}
+
+	channels, err := s.chRepo.GetForUser(ctx, uOID)
 	if err != nil {
 		return nil, err
 	}
 
-	var msgs []*domain.Message
-	for _, om := range offlineMsgs {
-		msgs = append(msgs, &om.Message)
+	readStates, _ := s.readStateRepo.GetForUser(ctx, uOID)
+
+	for _, ch := range channels {
+		if lastRead, ok := readStates[ch.ID]; ok {
+			ch.LastReadID = lastRead
+		}
 	}
 
-	// Clear once retrieved (reconnect delivery)
-	_ = s.offlineRepo.DeleteForUser(ctx, userID)
+	return channels, nil
+}
 
-	return msgs, nil
+func (s *ChatService) CreateChannel(ctx context.Context, creatorID bson.ObjectID, participants []bson.ObjectID, name string, isGroup bool) (*model.Channel, error) {
+	// Deduplicate participants and ensure creator is included
+	pMap := map[bson.ObjectID]bool{creatorID: true}
+	for _, p := range participants {
+		pMap[p] = true
+	}
+
+	var finalParticipants []bson.ObjectID
+	for id := range pMap {
+		finalParticipants = append(finalParticipants, id)
+	}
+
+	// Idempotency for Direct channels
+	if !isGroup && len(finalParticipants) == 2 {
+		existing, _ := s.chRepo.GetDirectChannel(ctx, finalParticipants[0], finalParticipants[1])
+		if existing != nil {
+			return existing, nil
+		}
+	}
+
+	ch := &model.Channel{
+		ID:           bson.NewObjectID(),
+		Type:         model.ChannelDirect,
+		Participants: finalParticipants,
+		Name:         name,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+	if isGroup {
+		ch.Type = model.ChannelGroup
+	}
+
+	if err := s.chRepo.Create(ctx, ch); err != nil {
+		return nil, err
+	}
+
+	// Signal participants to update their dynamic subscriptions
+	for _, pID := range finalParticipants {
+		// Signal topic: signal:USER_ID
+		signal := &model.SystemSignal{
+			Type:      model.SignalNewChannel,
+			ChannelID: ch.ID,
+		}
+		_ = s.broker.Publish(ctx, "signal:"+pID.Hex(), signal)
+	}
+
+	return ch, nil
+}
+
+func (s *ChatService) GetMessages(ctx context.Context, userID string, channelID string, limit int, beforeID string) ([]*model.Message, error) {
+	uOID, err := bson.ObjectIDFromHex(userID)
+	if err != nil {
+		return nil, err
+	}
+	chOID, err := bson.ObjectIDFromHex(channelID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 1. Authorization: Verify participant
+	channel, err := s.chRepo.GetByID(ctx, chOID)
+	if err != nil {
+		return nil, err
+	}
+
+	isParticipant := false
+	for _, p := range channel.Participants {
+		if p == uOID {
+			isParticipant = true
+			break
+		}
+	}
+	if !isParticipant {
+		return nil, fmt.Errorf("user not in channel")
+	}
+
+	// 2. Query history
+	var bOID bson.ObjectID
+	if beforeID != "" {
+		bOID, _ = bson.ObjectIDFromHex(beforeID)
+	}
+
+	if limit <= 0 {
+		limit = 50
+	}
+
+	return s.msgRepo.GetByChannel(ctx, chOID, limit, bOID)
+}
+
+func (s *ChatService) AddParticipants(ctx context.Context, operatorID, channelID string, targetUserIDs []string) error {
+	oOID, _ := bson.ObjectIDFromHex(operatorID)
+	chOID, _ := bson.ObjectIDFromHex(channelID)
+
+	var tOIDs []bson.ObjectID
+	for _, id := range targetUserIDs {
+		oid, err := bson.ObjectIDFromHex(id)
+		if err == nil {
+			tOIDs = append(tOIDs, oid)
+		}
+	}
+
+	// 1. Verify channel
+	channel, err := s.chRepo.GetByID(ctx, chOID)
+	if err != nil {
+		return err
+	}
+	if channel.Type != model.ChannelGroup {
+		return fmt.Errorf("cannot add participants to non-group channel")
+	}
+
+	// 2. Verify operator
+	existing := make(map[bson.ObjectID]bool)
+	isParticipant := false
+	for _, p := range channel.Participants {
+		existing[p] = true
+		if p == oOID {
+			isParticipant = true
+		}
+	}
+	if !isParticipant {
+		return fmt.Errorf("permission denied")
+	}
+
+	// 3. Filter only new participants
+	var filteredOIDs []bson.ObjectID
+	var filteredIDs []string
+	for i, tOID := range tOIDs {
+		if !existing[tOID] {
+			filteredOIDs = append(filteredOIDs, tOID)
+			filteredIDs = append(filteredIDs, targetUserIDs[i])
+		}
+	}
+
+	if len(filteredOIDs) == 0 {
+		return nil // All users already in channel
+	}
+
+	// 4. Update DB
+	if err := s.chRepo.AddParticipants(ctx, chOID, filteredOIDs); err != nil {
+		return err
+	}
+
+	// 5. Signal only newly added users
+	for _, tID := range filteredIDs {
+		signal := &model.SystemSignal{
+			Type:      model.SignalNewChannel,
+			ChannelID: chOID,
+		}
+		_ = s.broker.Publish(ctx, "signal:"+tID, signal)
+	}
+
+	return nil
+}
+
+func (s *ChatService) SubscribeToSystemSignals(ctx context.Context, userID string, handler func(context.Context, *model.SystemSignal) error) error {
+	topic := "signal:" + userID
+	return s.broker.Subscribe(ctx, topic, func(ctx context.Context, data []byte) error {
+		var sig model.SystemSignal
+		if err := msgpack.Unmarshal(data, &sig); err != nil {
+			return nil
+		}
+		return handler(ctx, &sig)
+	})
 }

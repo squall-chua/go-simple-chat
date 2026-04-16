@@ -3,6 +3,7 @@ syntax = "proto3";
 package chat.v1;
 
 import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
 import "google/api/annotations.proto";
 
 option go_package = "go-simple-chat/api/v1;chatv1";
@@ -22,6 +23,21 @@ service ChatService {
     };
   }
 
+  // Identity Renewal (for expired certificates)
+  rpc GetChallenge(GetChallengeRequest) returns (GetChallengeResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/challenge"
+      body: "*"
+    };
+  }
+
+  rpc RenewCertificate(RenewCertificateRequest) returns (RenewCertificateResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/renew"
+      body: "*"
+    };
+  }
+
   // Messaging
   rpc SendMessage(SendMessageRequest) returns (SendMessageResponse) {
     option (google.api.http) = {
@@ -32,6 +48,40 @@ service ChatService {
 
   // Real-time bidirectional streaming for chat and presence
   rpc BidiStreamChat(stream StreamMessageRequest) returns (stream StreamMessageResponse) {}
+
+  // Channel Management
+  rpc CreateChannel(CreateChannelRequest) returns (CreateChannelResponse) {
+    option (google.api.http) = {
+      post: "/v1/channels"
+      body: "*"
+    };
+  }
+
+  rpc AddParticipant(AddParticipantRequest) returns (AddParticipantResponse) {
+    option (google.api.http) = {
+      post: "/v1/channels/{channel_id}/participants"
+      body: "*"
+    };
+  }
+
+  rpc MarkAsRead(MarkAsReadRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post: "/v1/channels/{channel_id}/read"
+      body: "*"
+    };
+  }
+
+  rpc ListChannels(ListChannelsRequest) returns (ListChannelsResponse) {
+    option (google.api.http) = {
+      get: "/v1/channels"
+    };
+  }
+
+  rpc GetMessages(GetMessagesRequest) returns (GetMessagesResponse) {
+    option (google.api.http) = {
+      get: "/v1/channels/{channel_id}/messages"
+    };
+  }
 
   // Presence
   rpc GetPresence(GetPresenceRequest) returns (GetPresenceResponse) {
@@ -51,19 +101,42 @@ message RegisterRequest {
   bytes public_key = 2; // User's public key for E2E encryption info
 }
 
+
+message Media {
+  string type = 1; // e.g., image, video, voice, file
+  string url = 2;
+}
+
 message RegisterResponse {
   string user_id = 1;
   bytes certificate = 2; // Issued client certificate
   bytes private_key = 3; // Issued client private key (if server generates it, which it does in our CA model)
 }
 
+message GetChallengeRequest {
+  string username = 1;
+}
+
+message GetChallengeResponse {
+  string user_id = 1;
+  string nonce = 2;
+}
+
+message RenewCertificateRequest {
+  string user_id = 1;
+  bytes signature = 2; // Signature of the nonce
+}
+
+message RenewCertificateResponse {
+  bytes certificate = 1;
+}
+
 message SendMessageRequest {
   string channel_id = 1;
   string content = 2;
-  string media_type = 3;
-  string media_url = 4;
-  string thread_id = 5;
-  string parent_id = 6;
+  repeated Media medias = 3;
+  string thread_id = 4;
+  string parent_id = 5;
 }
 
 message SendMessageResponse {
@@ -92,11 +165,10 @@ message MessageReceived {
   string channel_id = 2;
   string sender_id = 3;
   string content = 4;
-  string media_type = 5;
-  string media_url = 6;
-  string thread_id = 7;
-  string parent_id = 8;
-  google.protobuf.Timestamp created_at = 9;
+  repeated Media medias = 5;
+  string thread_id = 6;
+  string parent_id = 7;
+  google.protobuf.Timestamp created_at = 8;
 }
 
 message PresenceEvent {
@@ -116,4 +188,56 @@ message GetPresenceRequest {
 message GetPresenceResponse {
   bool online = 1;
   google.protobuf.Timestamp last_seen = 2;
+}
+
+message CreateChannelRequest {
+  enum Type {
+    TYPE_UNSPECIFIED = 0;
+    TYPE_DIRECT = 1;
+    TYPE_GROUP = 2;
+  }
+  Type type = 1;
+  repeated string participants = 2;
+  string name = 3;
+}
+
+message CreateChannelResponse {
+  string channel_id = 1;
+}
+
+message ListChannelsRequest {}
+message ListChannelsResponse {
+  repeated ChannelInfo channels = 1;
+}
+
+message ChannelInfo {
+  string id = 1;
+  string type = 2;
+  repeated string participants = 3;
+  string name = 4;
+  string last_read_id = 5;
+}
+
+message MarkAsReadRequest {
+  string channel_id = 1;
+  string message_id = 2;
+}
+
+message GetMessagesRequest {
+  string channel_id = 1;
+  int32 limit = 2;
+  string before_id = 3;
+}
+
+message GetMessagesResponse {
+  repeated MessageReceived messages = 1;
+}
+
+message AddParticipantRequest {
+  string channel_id = 1;
+  repeated string user_ids = 2;
+}
+
+message AddParticipantResponse {
+  bool success = 1;
 }

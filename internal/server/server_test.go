@@ -11,8 +11,7 @@ import (
 	"go-simple-chat/internal/broker"
 	"go-simple-chat/internal/config"
 	"go-simple-chat/internal/crypto"
-	"go-simple-chat/internal/domain"
-	"go-simple-chat/internal/presence"
+	"go-simple-chat/internal/model"
 	"go-simple-chat/internal/repository"
 	"go-simple-chat/internal/server"
 	"go-simple-chat/internal/service"
@@ -21,24 +20,45 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
 
 // Minimal mock repo for integration test
 type mockUserRepo struct{ repository.UserRepository }
-func (m *mockUserRepo) Create(ctx context.Context, u *domain.User) error { return nil }
+
+func (m *mockUserRepo) Create(ctx context.Context, u *model.User) error { return nil }
 
 type mockMsgRepo struct{ repository.MessageRepository }
-func (m *mockMsgRepo) Create(ctx context.Context, msg *domain.Message) error { return nil }
+
+func (m *mockMsgRepo) Create(ctx context.Context, msg *model.Message) error { return nil }
 
 type mockChRepo struct{ repository.ChannelRepository }
-func (m *mockChRepo) GetByID(ctx context.Context, id string) (*domain.Channel, error) {
-	return &domain.Channel{ID: id, Participants: []string{"test_user", "system"}}, nil
+
+func (m *mockChRepo) GetByID(ctx context.Context, id bson.ObjectID) (*model.Channel, error) {
+	return &model.Channel{ID: id, Participants: []bson.ObjectID{bson.NewObjectID()}}, nil
 }
 
-type mockOfflineRepo struct{ repository.OfflineMessageRepository }
-func (m *mockOfflineRepo) Create(ctx context.Context, msg *domain.OfflineMessage) error { return nil }
+type mockReadStateRepo struct{ repository.ReadStateRepository }
+
+func (m *mockReadStateRepo) Upsert(ctx context.Context, u, c, l bson.ObjectID) (bool, error) {
+	return true, nil
+}
+func (m *mockReadStateRepo) GetForUser(ctx context.Context, u bson.ObjectID) (map[bson.ObjectID]bson.ObjectID, error) {
+	return nil, nil
+}
+
+type mockChallengeRepo struct{ repository.ChallengeRepository }
+
+func (m *mockChallengeRepo) Store(ctx context.Context, userID, nonce string, ttl time.Duration) error {
+	return nil
+}
+func (m *mockChallengeRepo) GetAndDelete(ctx context.Context, userID string) (string, error) {
+	return "", nil
+}
+
 
 func TestServerIntegration(t *testing.T) {
 	// 1. Setup Infra
@@ -47,11 +67,11 @@ func TestServerIntegration(t *testing.T) {
 	ca, err := crypto.NewCA(conf.CertDir)
 	require.NoError(t, err)
 
-	testBroker := broker.NewLocalBroker()
-	presenceSvc := presence.NewPresenceService(testBroker)
+	testBroker := broker.NewLocalBroker(zap.NewNop())
+	presenceSvc := service.NewPresenceService(&mockChRepo{}, testBroker)
 	
-	userService := service.NewUserService(&mockUserRepo{}, ca) 
-	chatService := service.NewChatService(&mockMsgRepo{}, &mockChRepo{}, &mockOfflineRepo{}, testBroker)
+	userService := service.NewUserService(&mockUserRepo{}, &mockChallengeRepo{}, ca) 
+	chatService := service.NewChatService(&mockMsgRepo{}, &mockChRepo{}, &mockReadStateRepo{}, testBroker)
 
 	// Setup gRPC Server
 	grpcServer := grpc.NewServer()
@@ -106,7 +126,7 @@ func TestServerIntegration(t *testing.T) {
 	defer opCancel()
 
 	resp, err := client.SendMessage(opCtx, &chatv1.SendMessageRequest{
-		ChannelId: "test",
+		ChannelId: bson.NewObjectID().Hex(),
 		Content:   "hello",
 	})
 	

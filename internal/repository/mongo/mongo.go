@@ -6,6 +6,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/x/mongo/driver/connstring"
 )
 
 type Store struct {
@@ -13,7 +14,12 @@ type Store struct {
 	DB     *mongo.Database
 }
 
-func NewStore(ctx context.Context, uri, dbName string) (*Store, error) {
+func NewStore(ctx context.Context, uri string) (*Store, error) {
+	cs, err := connstring.ParseAndValidate(uri)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse mongo uri: %w", err)
+	}
+
 	client, err := mongo.Connect(options.Client().ApplyURI(uri))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to mongo: %w", err)
@@ -22,6 +28,11 @@ func NewStore(ctx context.Context, uri, dbName string) (*Store, error) {
 	err = client.Ping(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to ping mongo: %w", err)
+	}
+
+	dbName := cs.Database
+	if dbName == "" {
+		dbName = "chat_db" // Fallback if not in URI
 	}
 
 	db := client.Database(dbName)
