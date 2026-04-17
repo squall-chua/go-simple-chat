@@ -12,6 +12,7 @@ type UserRepository interface {
 	Create(ctx context.Context, user *model.User) error
 	GetByID(ctx context.Context, id bson.ObjectID) (*model.User, error)
 	GetByUsername(ctx context.Context, username string) (*model.User, error)
+	UpdateLastSeen(ctx context.Context, id bson.ObjectID, lastSeen time.Time) error
 }
 
 type ChannelRepository interface {
@@ -20,11 +21,13 @@ type ChannelRepository interface {
 	GetForUser(ctx context.Context, userID bson.ObjectID) ([]*model.Channel, error)
 	GetDirectChannel(ctx context.Context, user1, user2 bson.ObjectID) (*model.Channel, error)
 	AddParticipants(ctx context.Context, channelID bson.ObjectID, userIDs []bson.ObjectID) error
+	UpdateLastMessageID(ctx context.Context, channelID bson.ObjectID, messageID bson.ObjectID) error
 }
 
 type MessageRepository interface {
 	Create(ctx context.Context, msg *model.Message) error
 	GetByChannel(ctx context.Context, channelID bson.ObjectID, limit int, beforeID bson.ObjectID) ([]*model.Message, error)
+	CountAfter(ctx context.Context, channelID bson.ObjectID, afterID bson.ObjectID) (int64, error)
 }
 
 type ReadStateRepository interface {

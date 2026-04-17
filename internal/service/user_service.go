@@ -41,8 +41,17 @@ func (s *UserService) Register(ctx context.Context, username string, publicKey [
 		return nil, nil, nil, fmt.Errorf("failed to create user: %w", err)
 	}
 
-	// Issue client certificate
-	certPEM, keyPEM, err := s.ca.IssueUserCert(user.ID.Hex(), nil)
+	// Issue client certificate using the provided public key
+	var pub any
+	if len(publicKey) > 0 {
+		var err error
+		pub, err = x509.ParsePKIXPublicKey(publicKey)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("invalid public key: %w", err)
+		}
+	}
+
+	certPEM, keyPEM, err := s.ca.IssueUserCert(user.ID.Hex(), pub, nil)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to issue cert: %w", err)
 	}
@@ -103,11 +112,18 @@ func (s *UserService) RenewCertificate(ctx context.Context, userID string, signa
 		return nil, fmt.Errorf("unsupported key type for renewal")
 	}
 
-	// Issue fresh certificate
-	certPEM, _, err := s.ca.IssueUserCert(userID, nil)
+	// Issue fresh certificate using the pinned public key
+	certPEM, _, err := s.ca.IssueUserCert(userID, pub, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue cert: %w", err)
 	}
 
 	return certPEM, nil
+}
+func (s *UserService) GetUserByID(ctx context.Context, id bson.ObjectID) (*model.User, error) {
+	return s.userRepo.GetByID(ctx, id)
+}
+
+func (s *UserService) GetUserByUsername(ctx context.Context, username string) (*model.User, error) {
+	return s.userRepo.GetByUsername(ctx, username)
 }

@@ -117,6 +117,12 @@ func (h *ChatHandler) CreateChannel(ctx context.Context, req *chatv1.CreateChann
 		}
 		participants = append(participants, oid)
 	}
+	for _, uname := range req.ParticipantUsernames {
+		u, err := h.userService.GetUserByUsername(ctx, uname)
+		if err == nil {
+			participants = append(participants, u.ID)
+		}
+	}
 
 	isGroup := req.Type == chatv1.CreateChannelRequest_TYPE_GROUP
 	ch, err := h.chatService.CreateChannel(ctx, creatorOID, participants, req.Name, isGroup)
@@ -138,19 +144,37 @@ func (h *ChatHandler) ListChannels(ctx context.Context, req *chatv1.ListChannels
 		return nil, err
 	}
 
+	userCache := make(map[string]string)
 	var results []*chatv1.ChannelInfo
 	for _, ch := range channels {
 		var participants []string
+		var usernames []string
 		for _, p := range ch.Participants {
-			participants = append(participants, p.Hex())
+			pID := p.Hex()
+			participants = append(participants, pID)
+
+			if name, ok := userCache[pID]; ok {
+				usernames = append(usernames, name)
+			} else {
+				user, err := h.userService.GetUserByID(ctx, p)
+				if err == nil {
+					usernames = append(usernames, user.Username)
+					userCache[pID] = user.Username
+				} else {
+					usernames = append(usernames, "unknown")
+				}
+			}
 		}
 
 		results = append(results, &chatv1.ChannelInfo{
-			Id:           ch.ID.Hex(),
-			Type:         string(ch.Type),
-			Participants: participants,
-			Name:         ch.Name,
-			LastReadId:   ch.LastReadID.Hex(),
+			Id:                   ch.ID.Hex(),
+			Type:                 string(ch.Type),
+			Participants:         participants,
+			ParticipantUsernames: usernames,
+			Name:                 ch.Name,
+			LastReadId:           ch.LastReadID.Hex(),
+			LastMessageId:        ch.LastMessageID.Hex(),
+			UnreadCount:          h.chatService.GetUnreadCount(ctx, ch.ID, ch.LastReadID),
 		})
 	}
 
@@ -182,8 +206,21 @@ func (h *ChatHandler) GetMessages(ctx context.Context, req *chatv1.GetMessagesRe
 		return nil, err
 	}
 
+	// Hydrate usernames for older messages that might not have them persisted
+	userCache := make(map[string]string)
 	var results []*chatv1.MessageReceived
 	for _, m := range msgs {
+		if m.SenderUsername == "" {
+			if cached, ok := userCache[m.SenderID.Hex()]; ok {
+				m.SenderUsername = cached
+			} else {
+				user, err := h.userService.GetUserByID(ctx, m.SenderID)
+				if err == nil {
+					m.SenderUsername = user.Username
+					userCache[m.SenderID.Hex()] = user.Username
+				}
+			}
+		}
 		results = append(results, toProtoMsg(m))
 	}
 
@@ -196,7 +233,15 @@ func (h *ChatHandler) AddParticipant(ctx context.Context, req *chatv1.AddPartici
 		return nil, err
 	}
 
-	err = h.chatService.AddParticipants(ctx, uOID.Hex(), req.ChannelId, req.UserIds)
+	userIDs := req.UserIds
+	for _, uname := range req.Usernames {
+		user, err := h.userService.GetUserByUsername(ctx, uname)
+		if err == nil {
+			userIDs = append(userIDs, user.ID.Hex())
+		}
+	}
+
+	err = h.chatService.AddParticipants(ctx, uOID.Hex(), req.ChannelId, userIDs)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -257,13 +302,19 @@ func (h *ChatHandler) SendMessage(ctx context.Context, req *chatv1.SendMessageRe
 		})
 	}
 
+	sender, err := h.userService.GetUserByID(ctx, senderOID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch sender info: %w", err)
+	}
+
 	msg := &model.Message{
-		ChannelID: channelOID,
-		SenderID:  senderOID,
-		Content:   req.Content,
-		Medias:    medias,
-		ThreadID:  req.ThreadId,
-		ParentID:  req.ParentId,
+		ChannelID:      channelOID,
+		SenderID:       senderOID,
+		SenderUsername: sender.Username,
+		Content:        req.Content,
+		Medias:         medias,
+		ThreadID:       req.ThreadId,
+		ParentID:       req.ParentId,
 	}
 
 	if err := h.chatService.SendMessage(ctx, msg); err != nil {
@@ -313,8 +364,27 @@ func (h *ChatHandler) BidiStreamChat(stream chatv1.ChatService_BidiStreamChatSer
 	// 4b. Personal signal topic for dynamic updates (New channels, etc.)
 	go func() {
 		_ = h.chatService.SubscribeToSystemSignals(subCtx, userID.Hex(), func(ctx context.Context, sig *model.SystemSignal) error {
-			if sig.Type == model.SignalNewChannel {
+			switch sig.Type {
+			case model.SignalNewChannel:
 				h.subscribeToChannel(subCtx, sig.ChannelID.Hex(), safeSend, &stateMu, lastPresence)
+
+				// Notify the user about the new channel
+				_ = safeSend(&chatv1.StreamMessageResponse{
+					Payload: &chatv1.StreamMessageResponse_ChannelJoined{
+						ChannelJoined: &chatv1.ChannelJoined{
+							ChannelId: sig.ChannelID.Hex(),
+						},
+					},
+				})
+			case model.SignalRosterUpdate:
+				// Someone was added to an existing channel
+				_ = safeSend(&chatv1.StreamMessageResponse{
+					Payload: &chatv1.StreamMessageResponse_ParticipantAdded{
+						ParticipantAdded: &chatv1.ParticipantAdded{
+							ChannelId: sig.ChannelID.Hex(),
+						},
+					},
+				})
 			}
 			return nil
 		})
@@ -387,14 +457,15 @@ func toProtoMsg(m *model.Message) *chatv1.MessageReceived {
 	}
 
 	return &chatv1.MessageReceived{
-		MessageId: m.ID.Hex(),
-		ChannelId: m.ChannelID.Hex(),
-		SenderId:  m.SenderID.Hex(),
-		Content:   m.Content,
-		Medias:    medias,
-		ThreadId:  m.ThreadID,
-		ParentId:  m.ParentID,
-		CreatedAt: timestamppb.New(m.CreatedAt),
+		MessageId:      m.ID.Hex(),
+		ChannelId:      m.ChannelID.Hex(),
+		SenderId:       m.SenderID.Hex(),
+		SenderUsername: m.SenderUsername,
+		Content:        m.Content,
+		Medias:         medias,
+		ThreadId:       m.ThreadID,
+		ParentId:       m.ParentID,
+		CreatedAt:      timestamppb.New(m.CreatedAt),
 	}
 }
 
@@ -433,4 +504,29 @@ func (h *ChatHandler) subscribeToChannel(subCtx context.Context, channelID strin
 			})
 		})
 	}()
+}
+
+func (h *ChatHandler) GetPresence(ctx context.Context, req *chatv1.GetPresenceRequest) (*chatv1.GetPresenceResponse, error) {
+	id := req.UserId
+	if id == "" && req.Username != "" {
+		user, err := h.userService.GetUserByUsername(ctx, req.Username)
+		if err != nil {
+			return nil, status.Error(codes.NotFound, "user not found")
+		}
+		id = user.ID.Hex()
+	}
+
+	if id == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id or username is required")
+	}
+
+	online, lastSeen, err := h.presenceService.GetPresence(ctx, id)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to get presence: %v", err)
+	}
+
+	return &chatv1.GetPresenceResponse{
+		Online:   online,
+		LastSeen: timestamppb.New(lastSeen),
+	}, nil
 }

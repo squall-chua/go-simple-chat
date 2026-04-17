@@ -30,6 +30,9 @@ import (
 type mockUserRepo struct{ repository.UserRepository }
 
 func (m *mockUserRepo) Create(ctx context.Context, u *model.User) error { return nil }
+func (m *mockUserRepo) UpdateLastSeen(ctx context.Context, id bson.ObjectID, lastSeen time.Time) error {
+	return nil
+}
 
 type mockMsgRepo struct{ repository.MessageRepository }
 
@@ -68,10 +71,10 @@ func TestServerIntegration(t *testing.T) {
 	require.NoError(t, err)
 
 	testBroker := broker.NewLocalBroker(zap.NewNop())
-	presenceSvc := service.NewPresenceService(&mockChRepo{}, testBroker)
+	presenceSvc := service.NewPresenceService(&mockChRepo{}, &mockUserRepo{}, testBroker)
 	
 	userService := service.NewUserService(&mockUserRepo{}, &mockChallengeRepo{}, ca) 
-	chatService := service.NewChatService(&mockMsgRepo{}, &mockChRepo{}, &mockReadStateRepo{}, testBroker)
+	chatService := service.NewChatService(&mockMsgRepo{}, &mockChRepo{}, &mockReadStateRepo{}, userService, testBroker)
 
 	// Setup gRPC Server
 	grpcServer := grpc.NewServer()
@@ -94,7 +97,7 @@ func TestServerIntegration(t *testing.T) {
 	time.Sleep(300 * time.Millisecond) // Wait for start
 
 	// 3. Client Setup (mTLS)
-	certPEM, keyPEM, err := ca.IssueUserCert("test_user", []string{"localhost", "127.0.0.1"})
+	certPEM, keyPEM, err := ca.IssueUserCert("test_user", nil, []string{"localhost", "127.0.0.1"})
 	require.NoError(t, err)
 
 	cert, err := tls.X509KeyPair(certPEM, keyPEM)

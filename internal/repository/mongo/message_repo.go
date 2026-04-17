@@ -62,3 +62,14 @@ func (r *MessageRepo) GetByChannel(ctx context.Context, channelID bson.ObjectID,
 	}
 	return results, nil
 }
+
+func (r *MessageRepo) CountAfter(ctx context.Context, channelID bson.ObjectID, afterID bson.ObjectID) (int64, error) {
+	f := gmqb.Field[model.Message]
+	filter := bson.M{
+		f("ChannelID"): channelID,
+	}
+	if !afterID.IsZero() {
+		filter[f("ID")] = bson.M{"$gt": afterID}
+	}
+	return r.col.Unwrap().CountDocuments(ctx, filter)
+}

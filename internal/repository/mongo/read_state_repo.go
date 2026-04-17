@@ -39,34 +39,26 @@ func (r *ReadStateRepo) Upsert(ctx context.Context, userID, channelID, lastRead 
 	f := gmqb.Field[model.ReadState]
 	now := time.Now()
 
-	filter := gmqb.And(
-		gmqb.Eq(f("UserID"), userID),
-		gmqb.Eq(f("ChannelID"), channelID),
-	)
+	// Use literal bson.M for filter to ensure MongoDB can extract fields for upsert
+	filter := bson.M{
+		f("UserID"):    userID,
+		f("ChannelID"): channelID,
+	}
 
-	// Single atomic call using an aggregation pipeline update (requires MongoDB 4.2+)
-	// 1. last_read = max(existing, new)
-	// 2. updated_at = if last_read increased then now else existing
-	pipeline := mongo.Pipeline{
-		{{Key: "$set", Value: bson.M{
-			f("LastRead"): bson.M{"$max": bson.A{"$" + f("LastRead"), lastRead}},
-			f("UpdatedAt"): bson.M{
-				"$cond": bson.M{
-					"if":   bson.M{"$lt": bson.A{"$" + f("LastRead"), lastRead}},
-					"then": now,
-					"else": bson.M{"$ifNull": bson.A{"$" + f("UpdatedAt"), now}},
-				},
-			},
-		}}},
+	// Use standard $max and $set
+	// Note: We don't necessarily need $setOnInsert if these fields are in the filter
+	update := bson.M{
+		"$max": bson.M{f("LastRead"): lastRead},
+		"$set": bson.M{f("UpdatedAt"): now},
 	}
 
 	opts := options.UpdateOne().SetUpsert(true)
-	res, err := r.col.Unwrap().UpdateOne(ctx, filter, pipeline, opts)
+	res, err := r.col.Unwrap().UpdateOne(ctx, filter, update, opts)
 	if err != nil {
 		return false, fmt.Errorf("failed to upsert read state: %w", err)
 	}
 
-	// If it was newly inserted OR an existing record was modified (meaning last_read increased)
+	// If it was newly inserted OR an existing record was modified
 	return res.UpsertedCount > 0 || res.ModifiedCount > 0, nil
 }
 

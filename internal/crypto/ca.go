@@ -103,10 +103,20 @@ func (c *CA) loadOrGenerateCA() error {
 	return nil
 }
 
-func (c *CA) IssueUserCert(userID string, dnsNames []string) ([]byte, []byte, error) {
-	userKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, nil, err
+func (c *CA) IssueUserCert(userID string, publicKey any, dnsNames []string) ([]byte, []byte, error) {
+	var pubKey any
+	var privPEM []byte
+
+	if publicKey != nil {
+		pubKey = publicKey
+	} else {
+		userKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return nil, nil, err
+		}
+		pubKey = &userKey.PublicKey
+		keyBytes, _ := x509.MarshalECPrivateKey(userKey)
+		privPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes})
 	}
 
 	serialNumber, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
@@ -122,16 +132,14 @@ func (c *CA) IssueUserCert(userID string, dnsNames []string) ([]byte, []byte, er
 		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 	}
 
-	certBytes, err := x509.CreateCertificate(rand.Reader, template, c.caCert, &userKey.PublicKey, c.caKey)
+	certBytes, err := x509.CreateCertificate(rand.Reader, template, c.caCert, pubKey, c.caKey)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certBytes})
-	keyBytes, _ := x509.MarshalECPrivateKey(userKey)
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes})
 
-	return certPEM, keyPEM, nil
+	return certPEM, privPEM, nil
 }
 
 func (c *CA) GetCACert() []byte {

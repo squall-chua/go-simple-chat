@@ -5,3 +5,4 @@ chat-server
 chat-service.md
 *.crt
 *.key
+debug.log

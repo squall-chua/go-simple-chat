@@ -154,8 +154,16 @@ message StreamMessageResponse {
   oneof payload {
     MessageReceived message_received = 1;
     PresenceEvent presence_event = 2;
-    ErrorEvent error = 3;
+    ChannelJoined channel_joined = 3;
+    ParticipantAdded participant_added = 4;
+    ErrorEvent error = 5;
   }
+}
+
+message ParticipantAdded {
+  string channel_id = 1;
+  string user_id = 2;
+  string username = 3;
 }
 
 message Heartbeat {}
@@ -164,11 +172,12 @@ message MessageReceived {
   string message_id = 1;
   string channel_id = 2;
   string sender_id = 3;
-  string content = 4;
-  repeated Media medias = 5;
-  string thread_id = 6;
-  string parent_id = 7;
-  google.protobuf.Timestamp created_at = 8;
+  string sender_username = 4;
+  string content = 5;
+  repeated Media medias = 6;
+  string thread_id = 7;
+  string parent_id = 8;
+  google.protobuf.Timestamp created_at = 9;
 }
 
 message PresenceEvent {
@@ -181,8 +190,14 @@ message ErrorEvent {
   string message = 2;
 }
 
+message ChannelJoined {
+  string channel_id = 1;
+  string name = 2;
+}
+
 message GetPresenceRequest {
   string user_id = 1;
+  string username = 2;
 }
 
 message GetPresenceResponse {
@@ -198,7 +213,8 @@ message CreateChannelRequest {
   }
   Type type = 1;
   repeated string participants = 2;
-  string name = 3;
+  repeated string participant_usernames = 3;
+  string name = 4;
 }
 
 message CreateChannelResponse {
@@ -214,8 +230,11 @@ message ChannelInfo {
   string id = 1;
   string type = 2;
   repeated string participants = 3;
-  string name = 4;
-  string last_read_id = 5;
+  repeated string participant_usernames = 4;
+  string name = 5;
+  string last_read_id = 6;
+  string last_message_id = 7;
+  int32 unread_count = 8;
 }
 
 message MarkAsReadRequest {
@@ -236,6 +255,7 @@ message GetMessagesResponse {
 message AddParticipantRequest {
   string channel_id = 1;
   repeated string user_ids = 2;
+  repeated string usernames = 3;
 }
 
 message AddParticipantResponse {

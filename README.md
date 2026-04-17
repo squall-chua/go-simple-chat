@@ -1,4 +1,4 @@
-# Antigravity Chat Service
+# Go Simple Chat
 
 A production-ready, horizontally-scalable chat service in Go using a Hexagonal Modular Monolith architecture.
 
@@ -11,7 +11,67 @@ A production-ready, horizontally-scalable chat service in Go using a Hexagonal M
 - **Read State Sync:** Real-time synchronization of "Last Read" markers across all devices.
 - **Scalable Broker:** Horizontal scalability via Redis; cluster-ready challenge storage in MongoDB.
 - **Persistence:** MongoDB with optimized compound indexes and TTL-based authentication challenges.
-- **Clients:** Go CLI and Nuxt 3 Web Dashboard.
+- **Premium TUI Client:** A Go-based terminal interface with dual-pane layout, real-time presence, and smart timestamps.
+- **Nuxt 3 Dashboard:** Web-based administrative and chat dashboard.
+
+## 🚀 Premium TUI Client
+
+Go Simple Chat features a high-performance terminal interface built with **Bubble Tea** and **Lipgloss**.
+
+### 1. Launching the Client
+
+After building (`make build`), start the client with your issued credentials:
+
+```bash
+./chat-client --cert <username>.crt --key <username>.key
+```
+
+### 2. UI Layout & Navigation
+
+The interface is divided into three main zones:
+
+- **Left Sidebar:** A dual-pane list showcasing your **Channels** (top) and **Participants** in the active channel (bottom).
+- **Main Chat:** The scrollable message history for the selected conversation.
+- **Message Input:** The bottom area where you type messages or execute commands.
+
+**Keyboard Shortcuts:**
+
+| Key | Action |
+| :--- | :--- |
+| `Tab` | **Switch Focus** between the Sidebar and the Message Input. |
+| `Arrows (↑↓)` | Navigate the Channel list (when Sidebar is focused) or move text cursor. |
+| `PgUp / PgDn` | **Scroll History** in the active channel. |
+| `Enter` | **Send** your message or execute a `/command`. |
+| `Ctrl+C / ESC` | Safely exit the application. |
+
+### 3. Understanding the Sidebar
+
+- **Presence Indicators:**
+  - `●` (Green): User is currently online and active.
+  - `○` (Gray): User is offline (last-seen time available via `/presence`).
+  - **Group Count:** Groups show the number of online participants (e.g., `3●`).
+- **Unread Markers:**
+  - Conversations with new messages are highlighted in **bold green**.
+  - Numerical badges (e.g., `[5]`) indicate exactly how many messages you've missed.
+  - Clicking/Focusing a channel automatically synchronizes your read-state to the server.
+
+### 4. Interactive Command Palette
+
+Type these slash-commands into the message input field:
+
+- `/dm <username>` — Instantly start a private 1-on-1 conversation.
+- `/create <name> <u1> <u2>...` — Create a new group channel with multiple members.
+- `/add <usernames...>` — Add new participants to an existing group.
+- `/presence <username>` — View detailed status and metadata for any user.
+- `/read` — Manually clear all unread markers for the active channel.
+- `/help` — Display the interactive command guide.
+
+### 5. Identity & Lifecycle Management
+
+**Go Simple Chat** enforces strict identity via mTLS. The TUI client manages this lifecycle seamlessly:
+
+- **🔐 Registration:** New users must first register to receive their unique certificate and key. This single-command flow anchors your identity into the persistent database.
+- **🕒 Automated Renewal:** If your certificate expires, the TUI client will automatically initiate the **Challenge-Response** flow. You will be prompted with a cryptographic nonce; once signed with your pinned private key, the server issues a fresh certificate instantly, ensuring you are never locked out of your conversations.
 
 ## Quickstart
 
@@ -24,46 +84,41 @@ go mod tidy
 # Build server and client
 make build
 
-# Start infrastructure (Mongo, Redis)
-docker-compose up -d
-
-# Start server
-./chat-server
+# Start services (Server, Mongo, Redis, Prometheus)
+docker-compose up -d --build
 ```
+
+> [!NOTE]
+> On the first run, the server automatically generates the root CA (`ca.crt`) and its own server certificates (`server.crt`, `server.key`) in the `certs/` directory if they do not exist.
 
 ### 2. User Registration & Identity
 
 Identity is tied to mTLS. For new users:
 
-1. **Register**: Submit `username` and `public_key`. Receive an issued certificate.
-2. **Authenticate**: Use the certificate for all subsequent mTLS handshakes.
-3. **Renew**: If a certificate expires, use the **Challenge-Response** flow to prove identity via the registered public key and obtain a new certificate.
+1. **Register**: Use the included script to register and receive your credentials.
 
-#### Generate Test User Certificates (Manual)
+   ```bash
+   go run scripts/register_user/register_user.go --username "alice"
+   ```
 
-For rapid testing:
+2. **Authenticate**: Use the issued certificate for all subsequent connections.
+3. **Renew**: If your certificate expires, the client will prompt you to use the **Challenge-Response** flow to obtain a new one using your pinned private key.
 
-```bash
-# Creates testuser.crt and testuser.key
-go run scripts/gen_test_certs/main.go --username "myuser"
-```
-
-### 3. Running the Demo CLI
+### 3. Running the Client
 
 ```bash
-# Run the interactive CLI client
-./chat-client --cert testuser.crt --key testuser.key
+# Start the TUI client
+./chat-client --cert alice.crt --key alice.key
 ```
 
 ## Architecture
 
 - **Hexagonal Modular Monolith:** Core logic decoupled from transport and storage.
-- **Unified Identity:** Client certificates are the source of truth for identity (`UserID` in `CommonName`).
-- **WebSocket mTLS:** The WebSocket bridge propagates TLS identities into gRPC metadata, allowing browser-based clients to maintain full mTLS security.
-- **Public Key Pinning:** Prevents impersonation by verifying the certificate's public key against the user's permanent record in the database.
-- **Cluster Readiness:** All short-lived authentication states (challenges) and signaling (broker) are stored in shared repositories.
+- **Real-Time Roster Sync:** Invisible system signals trigger automatic UI refreshes when participants are added.
+- **WebSocket mTLS:** The WebSocket bridge propagates TLS identities into gRPC metadata.
+- **Public Key Pinning:** Prevents impersonation by verifying the certificate's public key against the user's permanent database record.
 
 ## Monitoring
 
 - **Metrics:** `https://localhost:8080/metrics`
-- **Dashboard:** Grafana on port 3000; Prometheus on 9090.
+- **Dashboards:** Grafana (port 3000) and Prometheus (port 9090) are included in the stack.

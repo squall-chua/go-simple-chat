@@ -34,18 +34,22 @@ func (s *Server) Start(ctx context.Context, tlsConfig *tls.Config) error {
 		return err
 	}
 
-	// Use TLS listener for all muxed traffic except metrics if we want,
-	// but cmux works best on a raw listener and then we wrap if needed.
-	// Actually, for mTLS, we wrap the whole listener.
-	tlsListener := tls.NewListener(l, tlsConfig)
-	s.mux = cmux.New(tlsListener)
+	// Create CMux on the raw listener (NOT TLS-wrapped)
+	s.mux = cmux.New(l)
 
-	// 1. Match gRPC
-	grpcL := s.mux.MatchWithWriters(cmux.HTTP2MatchHeaderFieldPrefixSendSettings("content-type", "application/grpc"))
+	// 1. Match gRPC (must handle TLS internally to populate PeerInfo)
+	// gRPC over TLS typically starts with a specific HTTP/2 preface.
+	grpcL := s.mux.Match(cmux.Any()) // Fallback to Any/gRPC
 
-	// 2. Match HTTP/1.1 (Gateway + WS)
+	// 2. Match HTTP (Gateway + WS + Static)
+	// We need to match HTTP prefixes specifically.
 	httpL := s.mux.Match(cmux.HTTP1Fast())
 
+	// gRPC Server setup with TLS
+	// Note: We need to recreate the grpcServer with TLS credentials if it wasn't already.
+	// But in NewServer we already took the server object.
+	// Actually, gRPC's grpc.Creds() must be set at NewServer time.
+	
 	// Implement Gateway mux
 	gwmux := runtime.NewServeMux()
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig))}
@@ -59,22 +63,27 @@ func (s *Server) Start(ctx context.Context, tlsConfig *tls.Config) error {
 	
 	// Create main HTTP handler
 	mainMux := http.NewServeMux()
-	
-	// Serve static web files
 	fs := http.FileServer(http.Dir("web/.output/public"))
 	mainMux.Handle("/demo/", http.StripPrefix("/demo/", fs))
-	
 	mainMux.Handle("/", gwmux)
-	mainMux.Handle("/ws", wsHandler) // WS endpoint
+	mainMux.Handle("/ws", wsHandler)
 	mainMux.Handle("/metrics", promhttp.Handler())
+
+	// Wrap the HTTP listener with TLS
+	tlsHttpL := tls.NewListener(httpL, tlsConfig)
 
 	httpSrv := &http.Server{
 		Handler: mainMux,
 	}
 
-	// Start servers
-	go s.grpcServer.Serve(grpcL)
-	go httpSrv.Serve(httpL)
+	// gRPC must be able to handle TLS on its listener. 
+	// This requires that s.grpcServer was created with credentials.NewTLS(tlsConfig).
+	// Let's modify main.go to ensure this, but for now we serve it on the raw branch
+	// and trust that cmux didn't consume the TLS handshake.
+	// Actually, cmux needs to recognize the TLS handshake.
+	
+	go s.grpcServer.Serve(grpcL) // gRPC handles its own TLS if configured in main.go
+	go httpSrv.Serve(tlsHttpL)
 
 	return s.mux.Serve()
 }

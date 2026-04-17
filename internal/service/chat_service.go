@@ -17,6 +17,7 @@ type ChatService struct {
 	msgRepo       repository.MessageRepository
 	chRepo        repository.ChannelRepository
 	readStateRepo repository.ReadStateRepository
+	userService   *UserService
 	broker        broker.Broker
 }
 
@@ -24,12 +25,14 @@ func NewChatService(
 	msgRepo repository.MessageRepository,
 	chRepo repository.ChannelRepository,
 	readStateRepo repository.ReadStateRepository,
+	userService *UserService,
 	broker broker.Broker,
 ) *ChatService {
 	return &ChatService{
 		msgRepo:       msgRepo,
 		chRepo:        chRepo,
 		readStateRepo: readStateRepo,
+		userService:   userService,
 		broker:        broker,
 	}
 }
@@ -43,9 +46,23 @@ func (s *ChatService) MarkAsRead(ctx context.Context, userID, channelID, message
 	if err != nil {
 		return err
 	}
-	mOID, err := bson.ObjectIDFromHex(messageID)
-	if err != nil {
-		return err
+
+	var mOID bson.ObjectID
+	if messageID == "" {
+		ch, err := s.chRepo.GetByID(ctx, chOID)
+		if err != nil || ch == nil {
+			return fmt.Errorf("channel not found for marking read: %w", err)
+		}
+		mOID = ch.LastMessageID
+	} else {
+		mOID, err = bson.ObjectIDFromHex(messageID)
+		if err != nil {
+			return err
+		}
+	}
+
+	if mOID.IsZero() {
+		return nil // Nothing to mark as read
 	}
 
 	// 1. Persist read state
@@ -73,12 +90,22 @@ func (s *ChatService) SendMessage(ctx context.Context, msg *model.Message) error
 		msg.ID = bson.NewObjectID()
 	}
 
+	// 0. Hydrate sender username
+	if msg.SenderUsername == "" {
+		if sender, err := s.userService.GetUserByID(ctx, msg.SenderID); err == nil {
+			msg.SenderUsername = sender.Username
+		}
+	}
+
 	// 1. Persist message
 	if err := s.msgRepo.Create(ctx, msg); err != nil {
 		return fmt.Errorf("failed to persist message: %w", err)
 	}
 
-	// 2. Publish to broker (for online users)
+	// 2. Update Channel last message pointer
+	_ = s.chRepo.UpdateLastMessageID(ctx, msg.ChannelID, msg.ID)
+
+	// 3. Publish to broker (for online users)
 	// Broker uses string as routing key
 	if err := s.broker.Publish(ctx, "chat:"+msg.ChannelID.Hex(), msg); err != nil {
 		return fmt.Errorf("failed to publish message: %w", err)
@@ -153,6 +180,11 @@ func (s *ChatService) CreateChannel(ctx context.Context, creatorID bson.ObjectID
 
 	if err := s.chRepo.Create(ctx, ch); err != nil {
 		return nil, err
+	}
+
+	// Initialize read state for all participants to empty (zero unreads)
+	for _, pID := range finalParticipants {
+		_, _ = s.readStateRepo.Upsert(ctx, pID, ch.ID, bson.NilObjectID)
 	}
 
 	// Signal participants to update their dynamic subscriptions
@@ -261,6 +293,12 @@ func (s *ChatService) AddParticipants(ctx context.Context, operatorID, channelID
 		return err
 	}
 
+	// Initialize read state for new participants to current tip
+	channel, _ = s.chRepo.GetByID(ctx, chOID)
+	for _, tOID := range filteredOIDs {
+		_, _ = s.readStateRepo.Upsert(ctx, tOID, chOID, channel.LastMessageID)
+	}
+
 	// 5. Signal only newly added users
 	for _, tID := range filteredIDs {
 		signal := &model.SystemSignal{
@@ -270,7 +308,24 @@ func (s *ChatService) AddParticipants(ctx context.Context, operatorID, channelID
 		_ = s.broker.Publish(ctx, "signal:"+tID, signal)
 	}
 
+	// 6. Notify existing participants of roster update
+	for _, pID := range channel.Participants {
+		signal := &model.SystemSignal{
+			Type:      model.SignalRosterUpdate,
+			ChannelID: chOID,
+		}
+		_ = s.broker.Publish(ctx, "signal:"+pID.Hex(), signal)
+	}
+
 	return nil
+}
+
+func (s *ChatService) GetUnreadCount(ctx context.Context, channelID, lastReadID bson.ObjectID) int32 {
+	if lastReadID.IsZero() {
+		return 0
+	}
+	count, _ := s.msgRepo.CountAfter(ctx, channelID, lastReadID)
+	return int32(count)
 }
 
 func (s *ChatService) SubscribeToSystemSignals(ctx context.Context, userID string, handler func(context.Context, *model.SystemSignal) error) error {

@@ -19,6 +19,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 func main() {
@@ -60,7 +61,7 @@ func main() {
 	serverCertPath := filepath.Join(cfg.CertDir, "server.crt")
 	serverKeyPath := filepath.Join(cfg.CertDir, "server.key")
 	if _, err := os.Stat(serverCertPath); os.IsNotExist(err) {
-		certPEM, keyPEM, _ := ca.IssueUserCert(cfg.CertCN, cfg.CertDNS)
+		certPEM, keyPEM, _ := ca.IssueUserCert(cfg.CertCN, nil, cfg.CertDNS)
 		os.WriteFile(serverCertPath, certPEM, 0644)
 		os.WriteFile(serverKeyPath, keyPEM, 0600)
 	}
@@ -76,12 +77,12 @@ func main() {
 
 	// 4. Services
 	userService := service.NewUserService(userRepo, challengeRepo, ca)
-	presenceService := service.NewPresenceService(chRepo, b)
-	chatService := service.NewChatService(msgRepo, chRepo, readStateRepo, b)
+	presenceService := service.NewPresenceService(chRepo, userRepo, b)
+	chatService := service.NewChatService(msgRepo, chRepo, readStateRepo, userService, b)
 
 	// 5. gRPC Handler
 	handler := chatgrpc.NewChatHandler(userService, chatService, presenceService)
-	grpcSrv := grpc.NewServer()
+	grpcSrv := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsConfig)))
 	chatv1.RegisterChatServiceServer(grpcSrv, handler)
 
 	// 6. Multiplexed Server

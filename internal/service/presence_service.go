@@ -17,13 +17,15 @@ type PresenceService struct {
 	mu          sync.RWMutex
 	onlineUsers map[string]time.Time
 	chRepo      repository.ChannelRepository
+	userRepo    repository.UserRepository
 	broker      broker.Broker
 }
 
-func NewPresenceService(chRepo repository.ChannelRepository, broker broker.Broker) *PresenceService {
+func NewPresenceService(chRepo repository.ChannelRepository, userRepo repository.UserRepository, broker broker.Broker) *PresenceService {
 	return &PresenceService{
 		onlineUsers: make(map[string]time.Time),
 		chRepo:      chRepo,
+		userRepo:    userRepo,
 		broker:      broker,
 	}
 }
@@ -51,7 +53,33 @@ func (s *PresenceService) SetOffline(ctx context.Context, userID string) error {
 		return nil
 	}
 
+	// Persist last seen
+	oid, _ := bson.ObjectIDFromHex(userID)
+	_ = s.userRepo.UpdateLastSeen(ctx, oid, time.Now())
+
 	return s.publishPresenceChange(ctx, userID, false)
+}
+
+func (s *PresenceService) GetPresence(ctx context.Context, userID string) (bool, time.Time, error) {
+	s.mu.RLock()
+	lastActive, online := s.onlineUsers[userID]
+	s.mu.RUnlock()
+
+	if online {
+		return true, lastActive, nil
+	}
+
+	// For offline users, get last seen from DB
+	oid, err := bson.ObjectIDFromHex(userID)
+	if err != nil {
+		return false, time.Time{}, err
+	}
+	user, err := s.userRepo.GetByID(ctx, oid)
+	if err != nil {
+		return false, time.Time{}, err
+	}
+
+	return false, user.LastSeen, nil
 }
 
 func (s *PresenceService) publishPresenceChange(ctx context.Context, userID string, online bool) error {

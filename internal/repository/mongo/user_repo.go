@@ -3,6 +3,7 @@ package mongo
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"go-simple-chat/internal/model"
 	"github.com/squall-chua/gmqb"
@@ -47,4 +48,13 @@ func (r *UserRepo) GetByID(ctx context.Context, id bson.ObjectID) (*model.User, 
 func (r *UserRepo) GetByUsername(ctx context.Context, username string) (*model.User, error) {
 	f := gmqb.Field[model.User]
 	return r.col.FindOne(ctx, gmqb.Eq(f("Username"), username))
+}
+
+func (r *UserRepo) UpdateLastSeen(ctx context.Context, id bson.ObjectID, lastSeen time.Time) error {
+	f := gmqb.Field[model.User]
+	_, err := r.col.Unwrap().UpdateOne(ctx, gmqb.Eq(f("ID"), id), bson.M{"$set": bson.M{
+		f("LastSeen"):  lastSeen,
+		f("UpdatedAt"): time.Now(),
+	}})
+	return err
 }

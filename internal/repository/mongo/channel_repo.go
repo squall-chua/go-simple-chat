@@ -73,3 +73,13 @@ func (r *ChannelRepo) AddParticipants(ctx context.Context, channelID bson.Object
 	_, err := r.col.Unwrap().UpdateOne(ctx, filter, update)
 	return err
 }
+
+func (r *ChannelRepo) UpdateLastMessageID(ctx context.Context, channelID bson.ObjectID, messageID bson.ObjectID) error {
+	f := gmqb.Field[model.Channel]
+	filter := bson.M{f("ID"): channelID}
+	update := bson.M{
+		"$set": bson.M{f("LastMessageID"): messageID},
+	}
+	_, err := r.col.Unwrap().UpdateOne(ctx, filter, update)
+	return err
+}
