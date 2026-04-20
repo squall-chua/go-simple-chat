@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onUpdated, onMounted, watch } from 'vue'
-import { Hash, MessageSquare, Clock } from 'lucide-vue-next'
+import { Hash, MessageSquare, Clock, Paperclip, FileText, Video, Music, Archive, File } from 'lucide-vue-next'
 
 const { messages, isLoading } = useMessages()
 const { userId, username } = useAuth()
@@ -103,6 +103,16 @@ const isSameSender = (index: number) => {
   if (index === 0 || !messages.value[index] || !messages.value[index - 1]) return false
   return messages.value[index]?.sender_id === messages.value[index - 1]?.sender_id
 }
+
+const getMediaIcon = (type: string) => {
+  const t = type?.toLowerCase() || ''
+  if (t === 'image') return FileText // Handled by <img> but fallback
+  if (t === 'video') return Video
+  if (t === 'audio') return Music
+  if (t === 'pdf' || t === 'text' || t === 'document') return FileText
+  if (t === 'archive' || t === 'zip') return Archive
+  return File
+}
 </script>
 
 <template>
@@ -191,7 +201,7 @@ const isSameSender = (index: number) => {
                   class="flex items-center gap-2 p-3 rounded-lg bg-black/40 hover:bg-black/60 transition-colors text-xs font-bold border border-white/10"
                   :title="media.name"
                 >
-                  <Paperclip class="w-3.5 h-3.5 shrink-0 text-sky-400" />
+                  <component :is="getMediaIcon(media.type)" class="w-3.5 h-3.5 shrink-0 text-sky-400" />
                   <span class="truncate max-w-[200px] text-slate-200">{{ media.name || 'Attachment' }}</span>
                 </a>
               </div>
