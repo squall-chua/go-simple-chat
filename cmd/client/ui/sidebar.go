@@ -119,10 +119,11 @@ func (d channelDelegate) Render(w io.Writer, m list.Model, index int, item list.
 	}
 
 	if index == m.Index() {
+		marker := "> "
 		if d.focused {
-			_, _ = fmt.Fprint(w, model.StyleHighlight.Render("> "+presenceStr+title))
+			_, _ = fmt.Fprint(w, model.StyleHighlight.Render(marker+presenceStr+title))
 		} else {
-			_, _ = fmt.Fprint(w, model.StyleMuted.Render("  "+presenceStr+title))
+			_, _ = fmt.Fprint(w, model.StyleMuted.Render(marker)+presenceStr+title)
 		}
 	} else {
 		_, _ = fmt.Fprint(w, "  "+presenceStr+title)

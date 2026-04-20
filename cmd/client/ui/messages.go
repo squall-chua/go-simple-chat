@@ -43,39 +43,59 @@ func FormatMessage(msg model.Message, selfID string, width int) string {
 
 	header := fmt.Sprintf("%s [%s]", sender, timestamp)
 
-	var res string
-	if msg.SenderID == selfID {
-		res = model.StyleOwnMsg.Render(
-			fmt.Sprintf("%s\n  %s",
-				headerStyle.Render(model.StyleMuted.Render(header)),
-				msg.Content,
-			),
-		)
-	} else {
-		res = model.StyleOtherMsg.Render(
-			fmt.Sprintf("%s\n  %s",
-				headerStyle.Render(model.StyleSender.Render(sender)+" "+model.StyleTimestamp.Render("["+timestamp+"]")),
-				msg.Content,
-			),
-		)
-	}
+	// Build message content
+	content := msg.Content
 
-	// Handle media attachments
+	// Append media if any
 	if len(msg.Medias) > 0 {
 		var mediaStrs []string
 		for _, m := range msg.Medias {
 			icon := "[📎 File]"
-			switch m.Type {
+			switch strings.ToLower(m.Type) {
 			case "image":
 				icon = "[📷 Image]"
 			case "video":
 				icon = "[🎥 Video]"
 			case "audio":
 				icon = "[🎵 Audio]"
+			case "pdf", "text", "document":
+				icon = "[📄 Doc]"
 			}
-			mediaStrs = append(mediaStrs, model.StyleSpecial.Render(icon))
+			
+			name := m.Name
+			if name == "" {
+				name = "Attachment"
+			}
+			
+			// Format: [icon] Name (URL)
+			detail := fmt.Sprintf("%s %s %s", 
+				model.StyleSpecial.Render(icon),
+				model.StyleBold.Render(name),
+				model.StyleMuted.Render("("+m.Url+")"),
+			)
+			mediaStrs = append(mediaStrs, detail)
 		}
-		res += "\n" + strings.Join(mediaStrs, " ")
+		if content != "" {
+			content += "\n  "
+		}
+		content += strings.Join(mediaStrs, "\n  ")
+	}
+
+	var res string
+	if msg.SenderID == selfID {
+		res = model.StyleOwnMsg.Render(
+			fmt.Sprintf("%s\n  %s",
+				headerStyle.Render(model.StyleMuted.Render(header)),
+				content,
+			),
+		)
+	} else {
+		res = model.StyleOtherMsg.Render(
+			fmt.Sprintf("%s\n  %s",
+				headerStyle.Render(model.StyleSender.Render(sender)+" "+model.StyleTimestamp.Render("["+timestamp+"]")),
+				content,
+			),
+		)
 	}
 
 	return res + "\n"

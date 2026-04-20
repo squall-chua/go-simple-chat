@@ -79,6 +79,8 @@ var (
 	StyleHighlight = lipgloss.NewStyle().
 			Foreground(ColorHighlight).
 			Bold(true)
+	
+	StyleBold = lipgloss.NewStyle().Bold(true)
 
 	// Misc
 	Divider = lipgloss.NewStyle().
