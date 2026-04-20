@@ -1,18 +1,17 @@
 # Go Simple Chat
 
-A production-ready, horizontally-scalable chat service in Go using a Hexagonal Modular Monolith architecture.
+A high-performance, horizontally-scalable chat service architecture in Go implementing Hexagonal Modular Monolith principles and strict mTLS security.
 
 ## Features
 
-- **Multiplexed Port (8080):** gRPC, gRPC-Gateway (REST), WebSockets, and Prometheus metrics on a single port via `cmux`.
-- **mTLS Security & Identity:** Strict TLS 1.3 with mutual authentication and application-layer Public Key Pinning.
-- **Certificate Renewal:** Secure cryptographic challenge-response protocol for renewing expired certificates without permanent lockout.
-- **Multi-Media Support:** Messages support multiple attachments (Image, Video, Audio, File) per message.
-- **Read State Sync:** Real-time synchronization of "Last Read" markers across all devices.
-- **Scalable Broker:** Horizontal scalability via Redis; cluster-ready challenge storage in MongoDB.
-- **Persistence:** MongoDB with optimized compound indexes and TTL-based authentication challenges.
-- **Premium TUI Client:** A Go-based terminal interface with dual-pane layout, real-time presence, and smart timestamps.
-- **Nuxt 3 Dashboard:** Web-based administrative and chat dashboard.
+- **Multiplexed gRPC & REST:** Serving gRPC, gRPC-Gateway (REST), and WebSockets on a single port (8080) via `cmux`.
+- **Strict mTLS Identity:** TLS 1.3 with mutual authentication and application-layer Public Key Pinning (PKP) to prevent impersonation.
+- **Cryptographic Certificate Renewal:** A secure challenge-response protocol using signed nonces for safe identity rotation.
+- **Unified Media Metadata:** Server-side support for diverse media payloads (Image, Video, Audio, Document) with unified storage logic.
+- **Real-Time Read State Sync:** Consistent participant read-state tracking across multiple sessions and devices.
+- **Scalable Pub/Sub Broker:** Topology-agnostic horizontal scalability powered by a Redis-backed message broker.
+- **Cloud-Ready Persistence:** Optimized MongoDB storage with compound indexing and TTL-based authentication challenges.
+- **Observability:** Built-in Prometheus instrumentation for real-time monitoring of service health and RPC performance.
 
 ## 🚀 Premium TUI Client
 
@@ -66,12 +65,40 @@ Type these slash-commands into the message input field:
 - `/read` — Manually clear all unread markers for the active channel.
 - `/help` — Display the interactive command guide.
 
-### 5. Identity & Lifecycle Management
+### 5. Media & Alignment
 
-**Go Simple Chat** enforces strict identity via mTLS. The TUI client manages this lifecycle seamlessly:
+- **Rich Previews:** Attachment details (Icon, Filename, and URL) are rendered directly in the history.
+- **Unified Layout:** Media entries inherit the same styled borders and padding as the message text, ensuring a perfectly aligned and professional appearance.
 
-- **🔐 Registration:** New users must first register to receive their unique certificate and key. This single-command flow anchors your identity into the persistent database.
-- **🕒 Automated Renewal:** If your certificate expires, the TUI client will automatically initiate the **Challenge-Response** flow. You will be prompted with a cryptographic nonce; once signed with your pinned private key, the server issues a fresh certificate instantly, ensuring you are never locked out of your conversations.
+## 🌈 Nuxt 3 Web Client
+
+The web client provides a modern, accessible interface for chat and secure account lifecycle management.
+
+### 1. Midnight Design System
+
+Optimized for long-term focus and OLED displays, the web client uses a custom **"Dark Dim" (Midnight Slate)** theme. This reduces glare and retinal strain while maintaining high-contrast ratios for crisp legibility.
+
+### 2. Intelligent Chat Flow
+
+- **Smart Scroll:** When opening a channel, the view automatically centers on the **"New Messages"** marker, preserving your reading context.
+- **Context-Aware Icons:** Media attachments are tagged with type-specific icons (🎥, 🎵, 📄, 📦) for instant identification.
+
+### 3. Secure Renewal Lifecycle
+
+If your mTLS certificate expires, the web client handles the cryptographic recovery seamlessly:
+
+1. **Challenge Request:** The client fetches a unique nonce from the server.
+2. **Signature Generation:** Your private key signs the challenge locally (Ed25519 or ECDSA).
+3. **Verification & Issue:** Upon successful signature verification, the server issues a fresh certificate.
+4. **Download:** The dashboard provides an instant `.crt` download to restore your identity.
+
+### 4. Web Session Bridge
+
+The web client uses a session-based authentication flow to bridge browser environments with the mTLS-strict backend:
+
+1. **Certificate Exchange:** The client sends its public certificate to the `/api/session` endpoint.
+2. **Token Issuance:** The server verifies the certificate's authenticity (and its public key pinning) and issues a short-lived, stateless **Session Token**.
+3. **Authorization:** Subsequent API and WebSocket requests are authenticated via the `x-session-token` header or cookie. This allows the web client to maintain mTLS-level identity assurance without requiring the browser to manage client certificates for every individual RPC call.
 
 ## Quickstart
 
@@ -102,13 +129,28 @@ Identity is tied to mTLS. For new users:
    ```
 
 2. **Authenticate**: Use the issued certificate for all subsequent connections.
-3. **Renew**: If your certificate expires, the client will prompt you to use the **Challenge-Response** flow to obtain a new one using your pinned private key.
+3. **Renew**: If your certificate expires, use the **Challenge-Response** flow (built into the Web and TUI clients) to obtain a new one using your pinned private key.
 
-### 3. Running the Client
+### 3. Running the Clients
+
+#### TUI Client (Go)
 
 ```bash
 # Start the TUI client
 ./chat-client --cert alice.crt --key alice.key
+```
+
+#### Web Client (Nuxt 3)
+
+```bash
+# Navigate to web directory
+cd web
+
+# Install dependencies
+npm install
+
+# Start development server
+npm run dev
 ```
 
 ## Architecture
