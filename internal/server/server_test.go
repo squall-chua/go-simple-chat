@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"path/filepath"
 	"testing"
 	"time"
@@ -27,21 +28,36 @@ import (
 )
 
 // Minimal mock repo for integration test
-type mockUserRepo struct{ repository.UserRepository }
+type mockUserRepo struct {
+	repository.UserRepository
+	PublicKey []byte
+}
 
 func (m *mockUserRepo) Create(ctx context.Context, u *model.User) error { return nil }
 func (m *mockUserRepo) UpdateLastSeen(ctx context.Context, id bson.ObjectID, lastSeen time.Time) error {
 	return nil
+}
+func (m *mockUserRepo) GetByID(ctx context.Context, id bson.ObjectID) (*model.User, error) {
+	return &model.User{ID: id, Username: "test_user", PublicKey: m.PublicKey}, nil
 }
 
 type mockMsgRepo struct{ repository.MessageRepository }
 
 func (m *mockMsgRepo) Create(ctx context.Context, msg *model.Message) error { return nil }
 
-type mockChRepo struct{ repository.ChannelRepository }
-
 func (m *mockChRepo) GetByID(ctx context.Context, id bson.ObjectID) (*model.Channel, error) {
-	return &model.Channel{ID: id, Participants: []bson.ObjectID{bson.NewObjectID()}}, nil
+	return &model.Channel{ID: id, Participants: []bson.ObjectID{m.ParticipantID}}, nil
+}
+func (m *mockChRepo) UpdateLastMessageID(ctx context.Context, id, mid bson.ObjectID) error {
+	return nil
+}
+func (m *mockChRepo) GetForUser(ctx context.Context, id bson.ObjectID) ([]*model.Channel, error) {
+	return nil, nil
+}
+
+type mockChRepo struct {
+	repository.ChannelRepository
+	ParticipantID bson.ObjectID
 }
 
 type mockReadStateRepo struct{ repository.ReadStateRepository }
@@ -62,7 +78,6 @@ func (m *mockChallengeRepo) GetAndDelete(ctx context.Context, userID string) (st
 	return "", nil
 }
 
-
 func TestServerIntegration(t *testing.T) {
 	// 1. Setup Infra
 	conf := &config.Config{Port: "8081", CertDir: t.TempDir()}
@@ -71,16 +86,19 @@ func TestServerIntegration(t *testing.T) {
 	require.NoError(t, err)
 
 	testBroker := broker.NewLocalBroker(zap.NewNop())
-	presenceSvc := service.NewPresenceService(&mockChRepo{}, &mockUserRepo{}, testBroker)
+	uRepo := &mockUserRepo{}
+	testUserID := bson.NewObjectID()
+	chRepo := &mockChRepo{ParticipantID: testUserID}
+	presenceSvc := service.NewPresenceService(chRepo, uRepo, testBroker)
 	
-	userService := service.NewUserService(&mockUserRepo{}, &mockChallengeRepo{}, ca) 
-	chatService := service.NewChatService(&mockMsgRepo{}, &mockChRepo{}, &mockReadStateRepo{}, userService, testBroker)
+	userService := service.NewUserService(uRepo, &mockChallengeRepo{}, ca) 
+	chatService := service.NewChatService(&mockMsgRepo{}, chRepo, &mockReadStateRepo{}, userService, testBroker)
 
 	// Setup gRPC Server
 	grpcServer := grpc.NewServer()
 	
 	sessionRepo := repository.NewMemorySessionRepository()
-	sessionService, _ := service.NewSessionService(sessionRepo, &mockUserRepo{}, ca.GetCACert())
+	sessionService, _ := service.NewSessionService(sessionRepo, uRepo, ca.GetCACert())
 	
 	chatv1.RegisterChatServiceServer(grpcServer, chatgrpc.NewChatHandler(userService, chatService, presenceSvc, sessionService, nil))
 
@@ -101,8 +119,14 @@ func TestServerIntegration(t *testing.T) {
 	time.Sleep(300 * time.Millisecond) // Wait for start
 
 	// 3. Client Setup (mTLS)
-	certPEM, keyPEM, err := ca.IssueUserCert("test_user", nil, []string{"localhost", "127.0.0.1"})
+	certPEM, keyPEM, err := ca.IssueUserCert(testUserID.Hex(), nil, []string{"localhost", "127.0.0.1"})
 	require.NoError(t, err)
+
+	// Update mock repo with the issued public key for pinning check
+	block, _ := pem.Decode(certPEM)
+	c, _ := x509.ParseCertificate(block.Bytes)
+	pubKey, _ := x509.MarshalPKIXPublicKey(c.PublicKey)
+	uRepo.PublicKey = pubKey
 
 	cert, err := tls.X509KeyPair(certPEM, keyPEM)
 	require.NoError(t, err)
