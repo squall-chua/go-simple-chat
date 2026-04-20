@@ -10,10 +10,12 @@ import (
 	"go-simple-chat/internal/broker"
 	"go-simple-chat/internal/config"
 	"go-simple-chat/internal/crypto"
+	"go-simple-chat/internal/repository"
 	"go-simple-chat/internal/repository/mongo"
 	"go-simple-chat/internal/server"
 	"go-simple-chat/internal/service"
 	chatgrpc "go-simple-chat/internal/transport/grpc"
+	chathttp "go-simple-chat/internal/transport/http"
 	chatv1 "go-simple-chat/api/v1"
 
 	"go.uber.org/zap"
@@ -42,6 +44,7 @@ func main() {
 	msgRepo, _ := mongo.NewMessageRepo(ctx, store.DB)
 	readStateRepo, _ := mongo.NewReadStateRepo(ctx, store.DB)
 	challengeRepo, _ := mongo.NewChallengeRepo(ctx, store.DB)
+	sessionRepo := repository.NewMemorySessionRepository()
 
 	// 2. Broker
 	var b broker.Broker
@@ -79,14 +82,19 @@ func main() {
 	userService := service.NewUserService(userRepo, challengeRepo, ca)
 	presenceService := service.NewPresenceService(chRepo, userRepo, b)
 	chatService := service.NewChatService(msgRepo, chRepo, readStateRepo, userService, b)
+	sessionService, _ := service.NewSessionService(sessionRepo, userRepo, ca.GetCACert())
+	sessionHandler := chathttp.NewSessionHandler(sessionService)
+	uploadService, _ := service.NewUploadService(cfg)
 
 	// 5. gRPC Handler
-	handler := chatgrpc.NewChatHandler(userService, chatService, presenceService)
+	handler := chatgrpc.NewChatHandler(userService, chatService, presenceService, sessionService, uploadService)
 	grpcSrv := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsConfig)))
 	chatv1.RegisterChatServiceServer(grpcSrv, handler)
 
 	// 6. Multiplexed Server
 	srv := server.NewServer(cfg.Port, grpcSrv)
+	srv.SetSessionHandler(sessionHandler)
+	srv.SetUploadService(uploadService, sessionService)
 	
 	go func() {
 		logger.Info("server starting", zap.String("port", cfg.Port))

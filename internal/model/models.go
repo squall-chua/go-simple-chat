@@ -36,6 +36,7 @@ type Channel struct {
 type Media struct {
 	Type string `bson:"type"`
 	URL  string `bson:"url"`
+	Name string `bson:"name"`
 }
 
 type Message struct {

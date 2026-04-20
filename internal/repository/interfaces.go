@@ -39,3 +39,10 @@ type ChallengeRepository interface {
 	Store(ctx context.Context, userID, nonce string, ttl time.Duration) error
 	GetAndDelete(ctx context.Context, userID string) (string, error)
 }
+
+type SessionRepository interface {
+	Store(ctx context.Context, token, userID string, ttl time.Duration) error
+	Get(ctx context.Context, token string) (string, error)
+	Delete(ctx context.Context, token string) error
+}
+

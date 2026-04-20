@@ -1,39 +1,120 @@
 package ws
 
 import (
+	"context"
 	"crypto/tls"
-	"encoding/base64"
+	"io"
 	"net/http"
-	"strings"
 
-	"github.com/tmc/grpc-websocket-proxy/wsproxy"
+	chatv1 "go-simple-chat/api/v1"
+	"github.com/gorilla/websocket"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
-// NewProxy creates a new WebSocket to gRPC proxy handler.
-// It uses the wsproxy middleware to wrap the gRPC-Gateway mux or gRPC server directly.
-func NewProxy(grpcServer *grpc.Server, tlsConfig *tls.Config) http.Handler {
-	p := wsproxy.WebsocketProxy(grpcServer,
-		wsproxy.WithTokenCookieName("auth_token"),
-		wsproxy.WithForwardedHeaders(func(header string) bool {
-			h := strings.ToLower(header)
-			return h == "x-client-cert" || h == "x-internal-client-cert"
-		}),
-	)
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// If we have a client certificate, forward it in a header so the gRPC handler can see it.
-		// Use a dedicated header that we trust internally.
-		if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
-			cert := r.TLS.PeerCertificates[0]
-			// We can pass the raw DER in base64
-			encoded := base64.StdEncoding.EncodeToString(cert.Raw)
-			r.Header.Set("X-Internal-Client-Cert", encoded)
-		}
-		p.ServeHTTP(w, r)
-	})
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// Note: In Task 8, we will integrate this into the main cmux listener.
-// The wsproxy will handle the "Upgrade: websocket" header and bridge it
-// to the gRPC streams automatically.
+type Bridge struct {
+	client chatv1.ChatServiceClient
+}
+
+func NewProxy(grpcServer *grpc.Server, tlsConfig *tls.Config) http.Handler {
+	// In our unified server, we can't easily dial ourselves via TLS during bootstrap efficiently,
+	// so we'll use the ChatService directly if we can, or just keep the bridge simple.
+	return &Bridge{} // We'll initialize the client on the first request or via a setter
+}
+
+func (b *Bridge) SetClient(c chatv1.ChatServiceClient) {
+	b.client = c
+}
+
+func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if b.client == nil {
+		http.Error(w, "Bridge not initialized", http.StatusInternalServerError)
+		return
+	}
+
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	// Extract session token from headers, cookies, or query params
+	token := r.Header.Get("x-session-token")
+	if token == "" {
+		token = r.URL.Query().Get("token")
+	}
+	if token == "" {
+		if cookie, err := r.Cookie("x-session-token"); err == nil {
+			token = cookie.Value
+		}
+	}
+
+	// Prepare gRPC context with metadata
+	md := metadata.Pairs("x-session-token", token)
+	ctx, cancel := context.WithCancel(metadata.NewOutgoingContext(r.Context(), md))
+	defer cancel()
+
+	stream, err := b.client.BidiStreamChat(ctx)
+	if err != nil {
+		conn.WriteJSON(map[string]string{"error": "failed to connect to chat stream: " + err.Error()})
+		return
+	}
+
+	// Bidirectional pipe
+	errCh := make(chan error, 2)
+
+	// Browser -> Server
+	go func() {
+		for {
+			_, p, err := conn.ReadMessage()
+			if err != nil {
+				errCh <- err
+				return
+			}
+			var msg chatv1.StreamMessageRequest
+			if err := protojson.Unmarshal(p, &msg); err != nil {
+				// Log or handle unmarshal error?
+				continue
+			}
+			if err := stream.Send(&msg); err != nil {
+				errCh <- err
+				return
+			}
+		}
+	}()
+
+	// Server -> Browser
+	go func() {
+		for {
+			resp, err := stream.Recv()
+			if err == io.EOF {
+				errCh <- nil
+				return
+			}
+			if err != nil {
+				errCh <- err
+				return
+			}
+			
+			// Marshal with protojson to respect snake_case (UseProtoNames: true)
+			m := protojson.MarshalOptions{UseProtoNames: true, EmitUnpopulated: true}
+			b, err := m.Marshal(resp)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			
+			if err := conn.WriteMessage(websocket.TextMessage, b); err != nil {
+				errCh <- err
+				return
+			}
+		}
+	}()
+
+	<-errCh
+}

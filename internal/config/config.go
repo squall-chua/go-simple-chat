@@ -18,6 +18,8 @@ type Config struct {
 	S3AccessKey        string   `mapstructure:"S3_ACCESS_KEY"`
 	S3SecretKey        string   `mapstructure:"S3_SECRET_KEY"`
 	S3Bucket           string   `mapstructure:"S3_BUCKET"`
+	S3Region           string   `mapstructure:"S3_REGION"`
+	S3PublicURL        string   `mapstructure:"S3_PUBLIC_URL"`
 	S3UseSSL           bool     `mapstructure:"S3_USE_SSL"`
 	CertDir            string   `mapstructure:"CERT_DIR"`
 	CertCN             string   `mapstructure:"CERT_CN"`
@@ -35,6 +37,8 @@ func LoadConfig() *Config {
 	pflag.String("s3-access-key", "minioadmin", "S3 access key")
 	pflag.String("s3-secret-key", "minioadmin", "S3 secret key")
 	pflag.String("s3-bucket", "chat-media", "S3 bucket name")
+	pflag.String("s3-region", "us-east-1", "S3 region")
+	pflag.String("s3-public-url", "", "S3 public URL base (if empty, uses endpoint)")
 	pflag.Bool("s3-use-ssl", false, "Use SSL for S3")
 	pflag.String("cert-dir", "certs", "Directory containing TLS certificates")
 	pflag.String("cert-cn", "localhost", "Common Name for the server certificate")
@@ -53,6 +57,8 @@ func LoadConfig() *Config {
 	viper.BindPFlag("S3_ACCESS_KEY", pflag.Lookup("s3-access-key"))
 	viper.BindPFlag("S3_SECRET_KEY", pflag.Lookup("s3-secret-key"))
 	viper.BindPFlag("S3_BUCKET", pflag.Lookup("s3-bucket"))
+	viper.BindPFlag("S3_REGION", pflag.Lookup("s3-region"))
+	viper.BindPFlag("S3_PUBLIC_URL", pflag.Lookup("s3-public-url"))
 	viper.BindPFlag("S3_USE_SSL", pflag.Lookup("s3-use-ssl"))
 	viper.BindPFlag("CERT_DIR", pflag.Lookup("cert-dir"))
 	viper.BindPFlag("CERT_CN", pflag.Lookup("cert-cn"))

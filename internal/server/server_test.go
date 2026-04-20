@@ -78,7 +78,11 @@ func TestServerIntegration(t *testing.T) {
 
 	// Setup gRPC Server
 	grpcServer := grpc.NewServer()
-	chatv1.RegisterChatServiceServer(grpcServer, chatgrpc.NewChatHandler(userService, chatService, presenceSvc))
+	
+	sessionRepo := repository.NewMemorySessionRepository()
+	sessionService, _ := service.NewSessionService(sessionRepo, &mockUserRepo{}, ca.GetCACert())
+	
+	chatv1.RegisterChatServiceServer(grpcServer, chatgrpc.NewChatHandler(userService, chatService, presenceSvc, sessionService, nil))
 
 	srv := server.NewServer(conf.Port, grpcServer)
 

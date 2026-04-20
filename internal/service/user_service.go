@@ -43,7 +43,10 @@ func (s *UserService) Register(ctx context.Context, username string, publicKey [
 
 	// Issue client certificate using the provided public key
 	var pub any
-	if len(publicKey) > 0 {
+	if len(publicKey) == 32 {
+		// Treat as raw Ed25519 public key (common for browser clients)
+		pub = ed25519.PublicKey(publicKey)
+	} else if len(publicKey) > 0 {
 		var err error
 		pub, err = x509.ParsePKIXPublicKey(publicKey)
 		if err != nil {
@@ -96,9 +99,15 @@ func (s *UserService) RenewCertificate(ctx context.Context, userID string, signa
 	}
 
 	// Verify signature
-	pub, err := x509.ParsePKIXPublicKey(user.PublicKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse stored public key: %w", err)
+	var pub any
+	if len(user.PublicKey) == 32 {
+		pub = ed25519.PublicKey(user.PublicKey)
+	} else {
+		var err error
+		pub, err = x509.ParsePKIXPublicKey(user.PublicKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse stored public key: %w", err)
+		}
 	}
 
 	challengeData := []byte("RENEW_CERT:" + nonce)

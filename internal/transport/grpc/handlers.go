@@ -28,22 +28,54 @@ type ChatHandler struct {
 	userService     *service.UserService
 	chatService     *service.ChatService
 	presenceService *service.PresenceService
+	sessionService  *service.SessionService
+	uploadService   *service.UploadService
 }
 
 func NewChatHandler(
 	userService *service.UserService,
 	chatService *service.ChatService,
 	presenceService *service.PresenceService,
+	sessionService *service.SessionService,
+	uploadService *service.UploadService,
 ) *ChatHandler {
 	return &ChatHandler{
 		userService:     userService,
 		chatService:     chatService,
 		presenceService: presenceService,
+		sessionService:  sessionService,
+		uploadService:   uploadService,
 	}
+}
+
+func (h *ChatHandler) UploadFile(ctx context.Context, req *chatv1.UploadFileRequest) (*chatv1.UploadFileResponse, error) {
+	if h.uploadService == nil {
+		return nil, status.Error(codes.Unimplemented, "upload service not configured")
+	}
+
+	// 1. Authenticate (required for gRPC-Gateway)
+	_, err := h.getUserIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. Upload using existing service
+	// We wrap the bytes in a reader
+	reader := bytes.NewReader(req.Data)
+	url, err := h.uploadService.UploadFile(ctx, req.Filename, reader, int64(len(req.Data)), req.ContentType)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to upload: %v", err)
+	}
+
+	return &chatv1.UploadFileResponse{
+		Url:  url,
+		Name: req.Filename,
+	}, nil
 }
 
 func (h *ChatHandler) getUserIDFromContext(ctx context.Context) (bson.ObjectID, error) {
 	var clientCert *x509.Certificate
+	var sessionToken string
 
 	// 1. Try peer info (direct gRPC mTLS)
 	if p, ok := peer.FromContext(ctx); ok {
@@ -52,9 +84,10 @@ func (h *ChatHandler) getUserIDFromContext(ctx context.Context) (bson.ObjectID, 
 		}
 	}
 
-	// 2. Try metadata (proxied gRPC via WebSocket)
-	if clientCert == nil {
-		if md, ok := metadata.FromIncomingContext(ctx); ok {
+	// 2. Try metadata (proxied gRPC, WebSocket, or gRPC-Gateway)
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		// Check for internal cert (proxied from WS/Gateway)
+		if clientCert == nil {
 			vals := md.Get("x-internal-client-cert")
 			if len(vals) > 0 {
 				der, err := base64.StdEncoding.DecodeString(vals[0])
@@ -66,37 +99,47 @@ func (h *ChatHandler) getUserIDFromContext(ctx context.Context) (bson.ObjectID, 
 				}
 			}
 		}
+		// Check for session token (Web client)
+		tokens := md.Get("x-session-token")
+		if len(tokens) > 0 {
+			sessionToken = tokens[0]
+		}
 	}
 
-	if clientCert == nil {
-		return bson.NilObjectID, status.Error(codes.Unauthenticated, "no client certificate")
+	// Case A: Identity via Certificate (mTLS)
+	if clientCert != nil {
+		cn := clientCert.Subject.CommonName
+		oid, err := bson.ObjectIDFromHex(cn)
+		if err != nil {
+			return bson.NilObjectID, status.Errorf(codes.Unauthenticated, "invalid user id in certificate: %v", err)
+		}
+
+		// Verify user exists
+		user, err := h.userService.GetUser(ctx, oid.Hex())
+		if err != nil {
+			return bson.NilObjectID, status.Error(codes.Unauthenticated, "user not found or inactive")
+		}
+
+		// Public key pinning
+		certPubKey, err := x509.MarshalPKIXPublicKey(clientCert.PublicKey)
+		if err == nil && !bytes.Equal(certPubKey, user.PublicKey) {
+			return bson.NilObjectID, status.Error(codes.Unauthenticated, "certificate public key mismatch")
+		}
+		return oid, nil
 	}
 
-	// The CommonName is our UserID (as per IssueUserCert)
-	cn := clientCert.Subject.CommonName
-	oid, err := bson.ObjectIDFromHex(cn)
-	if err != nil {
-		return bson.NilObjectID, status.Errorf(codes.Unauthenticated, "invalid user id in certificate: %v", err)
+	// Case B: Identity via Session Token (Web Bridge)
+	if sessionToken != "" && h.sessionService != nil {
+		userID, err := h.sessionService.ValidateToken(ctx, sessionToken)
+		if err == nil {
+			oid, err := bson.ObjectIDFromHex(userID)
+			if err == nil {
+				return oid, nil
+			}
+		}
 	}
 
-	// Verify user exists in DB
-	user, err := h.userService.GetUser(ctx, oid.Hex())
-	if err != nil {
-		return bson.NilObjectID, status.Error(codes.Unauthenticated, "user not found or inactive")
-	}
-
-	// Double-check: Public key pinning
-	// The public key in the cert must match the one in our DB
-	certPubKey, err := x509.MarshalPKIXPublicKey(clientCert.PublicKey)
-	if err != nil {
-		return bson.NilObjectID, status.Errorf(codes.Internal, "failed to marshal certificate public key: %v", err)
-	}
-
-	if !bytes.Equal(certPubKey, user.PublicKey) {
-		return bson.NilObjectID, status.Error(codes.Unauthenticated, "certificate public key mismatch")
-	}
-
-	return oid, nil
+	return bson.NilObjectID, status.Error(codes.Unauthenticated, "authentication required: no valid certificate or session token found")
 }
 
 func (h *ChatHandler) HealthCheck(ctx context.Context, req *chatv1.HealthCheckRequest) (*chatv1.HealthCheckResponse, error) {
@@ -299,6 +342,7 @@ func (h *ChatHandler) SendMessage(ctx context.Context, req *chatv1.SendMessageRe
 		medias = append(medias, model.Media{
 			Type: m.Type,
 			URL:  m.Url,
+			Name: m.Name,
 		})
 	}
 
@@ -358,7 +402,7 @@ func (h *ChatHandler) BidiStreamChat(stream chatv1.ChatService_BidiStreamChatSer
 
 	// 4a. Initial subscriptions for existing channels
 	for _, ch := range channels {
-		h.subscribeToChannel(subCtx, ch.ID.Hex(), safeSend, &stateMu, lastPresence)
+		h.subscribeToChannel(subCtx, ch.ID.Hex(), userID.Hex(), safeSend, &stateMu, lastPresence)
 	}
 
 	// 4b. Personal signal topic for dynamic updates (New channels, etc.)
@@ -366,7 +410,7 @@ func (h *ChatHandler) BidiStreamChat(stream chatv1.ChatService_BidiStreamChatSer
 		_ = h.chatService.SubscribeToSystemSignals(subCtx, userID.Hex(), func(ctx context.Context, sig *model.SystemSignal) error {
 			switch sig.Type {
 			case model.SignalNewChannel:
-				h.subscribeToChannel(subCtx, sig.ChannelID.Hex(), safeSend, &stateMu, lastPresence)
+				h.subscribeToChannel(subCtx, sig.ChannelID.Hex(), userID.Hex(), safeSend, &stateMu, lastPresence)
 
 				// Notify the user about the new channel
 				_ = safeSend(&chatv1.StreamMessageResponse{
@@ -419,6 +463,7 @@ func (h *ChatHandler) BidiStreamChat(stream chatv1.ChatService_BidiStreamChatSer
 					medias = append(medias, model.Media{
 						Type: m.Type,
 						URL:  m.Url,
+						Name: m.Name,
 					})
 				}
 
@@ -453,6 +498,7 @@ func toProtoMsg(m *model.Message) *chatv1.MessageReceived {
 		medias = append(medias, &chatv1.Media{
 			Type: med.Type,
 			Url:  med.URL,
+			Name: med.Name,
 		})
 	}
 
@@ -469,7 +515,7 @@ func toProtoMsg(m *model.Message) *chatv1.MessageReceived {
 	}
 }
 
-func (h *ChatHandler) subscribeToChannel(subCtx context.Context, channelID string, safeSend func(*chatv1.StreamMessageResponse) error, stateMu *sync.Mutex, lastPresence map[string]bool) {
+func (h *ChatHandler) subscribeToChannel(subCtx context.Context, channelID, selfID string, safeSend func(*chatv1.StreamMessageResponse) error, stateMu *sync.Mutex, lastPresence map[string]bool) {
 	// 1. Chat messages
 	go func() {
 		_ = h.chatService.SubscribeToChannel(subCtx, channelID, func(ctx context.Context, msg *model.Message) error {
@@ -485,6 +531,9 @@ func (h *ChatHandler) subscribeToChannel(subCtx context.Context, channelID strin
 	go func() {
 		pTopic := "presence:" + channelID
 		_ = h.presenceService.SubscribeToChannelPresence(subCtx, pTopic, func(ctx context.Context, event *model.PresenceEvent) error {
+			if event.UserID == selfID {
+				return nil
+			}
 			stateMu.Lock()
 			current, ok := lastPresence[event.UserID]
 			if ok && current == event.Online {

@@ -29,6 +29,7 @@ const (
 	ChatService_CreateChannel_FullMethodName    = "/chat.v1.ChatService/CreateChannel"
 	ChatService_AddParticipant_FullMethodName   = "/chat.v1.ChatService/AddParticipant"
 	ChatService_MarkAsRead_FullMethodName       = "/chat.v1.ChatService/MarkAsRead"
+	ChatService_UploadFile_FullMethodName       = "/chat.v1.ChatService/UploadFile"
 	ChatService_ListChannels_FullMethodName     = "/chat.v1.ChatService/ListChannels"
 	ChatService_GetMessages_FullMethodName      = "/chat.v1.ChatService/GetMessages"
 	ChatService_GetPresence_FullMethodName      = "/chat.v1.ChatService/GetPresence"
@@ -52,6 +53,8 @@ type ChatServiceClient interface {
 	CreateChannel(ctx context.Context, in *CreateChannelRequest, opts ...grpc.CallOption) (*CreateChannelResponse, error)
 	AddParticipant(ctx context.Context, in *AddParticipantRequest, opts ...grpc.CallOption) (*AddParticipantResponse, error)
 	MarkAsRead(ctx context.Context, in *MarkAsReadRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// Media
+	UploadFile(ctx context.Context, in *UploadFileRequest, opts ...grpc.CallOption) (*UploadFileResponse, error)
 	ListChannels(ctx context.Context, in *ListChannelsRequest, opts ...grpc.CallOption) (*ListChannelsResponse, error)
 	GetMessages(ctx context.Context, in *GetMessagesRequest, opts ...grpc.CallOption) (*GetMessagesResponse, error)
 	// Presence
@@ -159,6 +162,16 @@ func (c *chatServiceClient) MarkAsRead(ctx context.Context, in *MarkAsReadReques
 	return out, nil
 }
 
+func (c *chatServiceClient) UploadFile(ctx context.Context, in *UploadFileRequest, opts ...grpc.CallOption) (*UploadFileResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UploadFileResponse)
+	err := c.cc.Invoke(ctx, ChatService_UploadFile_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *chatServiceClient) ListChannels(ctx context.Context, in *ListChannelsRequest, opts ...grpc.CallOption) (*ListChannelsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListChannelsResponse)
@@ -207,6 +220,8 @@ type ChatServiceServer interface {
 	CreateChannel(context.Context, *CreateChannelRequest) (*CreateChannelResponse, error)
 	AddParticipant(context.Context, *AddParticipantRequest) (*AddParticipantResponse, error)
 	MarkAsRead(context.Context, *MarkAsReadRequest) (*emptypb.Empty, error)
+	// Media
+	UploadFile(context.Context, *UploadFileRequest) (*UploadFileResponse, error)
 	ListChannels(context.Context, *ListChannelsRequest) (*ListChannelsResponse, error)
 	GetMessages(context.Context, *GetMessagesRequest) (*GetMessagesResponse, error)
 	// Presence
@@ -247,6 +262,9 @@ func (UnimplementedChatServiceServer) AddParticipant(context.Context, *AddPartic
 }
 func (UnimplementedChatServiceServer) MarkAsRead(context.Context, *MarkAsReadRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method MarkAsRead not implemented")
+}
+func (UnimplementedChatServiceServer) UploadFile(context.Context, *UploadFileRequest) (*UploadFileResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UploadFile not implemented")
 }
 func (UnimplementedChatServiceServer) ListChannels(context.Context, *ListChannelsRequest) (*ListChannelsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListChannels not implemented")
@@ -429,6 +447,24 @@ func _ChatService_MarkAsRead_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ChatService_UploadFile_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UploadFileRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ChatServiceServer).UploadFile(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ChatService_UploadFile_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ChatServiceServer).UploadFile(ctx, req.(*UploadFileRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ChatService_ListChannels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListChannelsRequest)
 	if err := dec(in); err != nil {
@@ -521,6 +557,10 @@ var ChatService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "MarkAsRead",
 			Handler:    _ChatService_MarkAsRead_Handler,
+		},
+		{
+			MethodName: "UploadFile",
+			Handler:    _ChatService_UploadFile_Handler,
 		},
 		{
 			MethodName: "ListChannels",

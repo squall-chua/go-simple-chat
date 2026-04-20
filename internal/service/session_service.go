@@ -1,0 +1,98 @@
+package service
+
+import (
+	"context"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"go-simple-chat/internal/model"
+	"go-simple-chat/internal/repository"
+	"time"
+
+	"github.com/google/uuid"
+	"go.mongodb.org/mongo-driver/v2/bson"
+)
+
+type SessionService struct {
+	sessionRepo repository.SessionRepository
+	userRepo    repository.UserRepository
+	caCert      *x509.Certificate
+}
+
+func NewSessionService(sessionRepo repository.SessionRepository, userRepo repository.UserRepository, caCertPEM []byte) (*SessionService, error) {
+	block, _ := pem.Decode(caCertPEM)
+	if block == nil {
+		return nil, errors.New("failed to decode CA certificate PEM")
+	}
+	caCert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse CA certificate: %w", err)
+	}
+
+	return &SessionService{
+		sessionRepo: sessionRepo,
+		userRepo:    userRepo,
+		caCert:      caCert,
+	}, nil
+}
+
+func (s *SessionService) IssueToken(ctx context.Context, certPEM []byte) (string, string, string, error) {
+	// 1. Parse and verify certificate
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return "", "", "", errors.New("failed to decode certificate PEM")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", "", "", fmt.Errorf("failed to parse certificate: %w", err)
+	}
+
+	roots := x509.NewCertPool()
+	roots.AddCert(s.caCert)
+	opts := x509.VerifyOptions{
+		Roots:     roots,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+
+	if _, err := cert.Verify(opts); err != nil {
+		return "", "", "", fmt.Errorf("certificate verification failed: %w", err)
+	}
+
+	// 2. Extract UserID (CommonName)
+	userID := cert.Subject.CommonName
+	if userID == "" {
+		return "", "", "", errors.New("certificate missing CommonName (UserID)")
+	}
+
+	// 3. Optional: Verify user exists
+	var user *model.User
+	oid, err := bson.ObjectIDFromHex(userID)
+	if err != nil {
+		// If not hex, maybe it's the username (for some older/legacy certs if any)
+		user, err = s.userRepo.GetByUsername(ctx, userID)
+	} else {
+		user, err = s.userRepo.GetByID(ctx, oid)
+	}
+
+	if err != nil {
+		return "", "", "", fmt.Errorf("user not found: %w", err)
+	}
+	
+	username := user.Username
+
+	// 4. Generate token
+	token := uuid.New().String()
+	ttl := 24 * time.Hour
+
+	// 5. Store session
+	if err := s.sessionRepo.Store(ctx, token, user.ID.Hex(), ttl); err != nil {
+		return "", "", "", fmt.Errorf("failed to store session: %w", err)
+	}
+
+	return token, user.ID.Hex(), username, nil
+}
+
+func (s *SessionService) ValidateToken(ctx context.Context, token string) (string, error) {
+	return s.sessionRepo.Get(ctx, token)
+}

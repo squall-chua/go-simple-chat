@@ -71,6 +71,14 @@ service ChatService {
     };
   }
 
+  // Media
+  rpc UploadFile(UploadFileRequest) returns (UploadFileResponse) {
+    option (google.api.http) = {
+      post: "/v1/upload"
+      body: "*"
+    };
+  }
+
   rpc ListChannels(ListChannelsRequest) returns (ListChannelsResponse) {
     option (google.api.http) = {
       get: "/v1/channels"
@@ -105,6 +113,18 @@ message RegisterRequest {
 message Media {
   string type = 1; // e.g., image, video, voice, file
   string url = 2;
+  string name = 3;
+}
+
+message UploadFileRequest {
+  string filename = 1;
+  bytes data = 2;
+  string content_type = 3;
+}
+
+message UploadFileResponse {
+  string url = 1;
+  string name = 2;
 }
 
 message RegisterResponse {
