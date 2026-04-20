@@ -8,8 +8,8 @@
 <style>
 body {
   margin: 0;
-  background: #020617;
-  color: #F8FAFC;
+  background: #010409;
+  color: #CBD5E1;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }

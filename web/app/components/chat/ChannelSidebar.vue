@@ -19,26 +19,26 @@ const getDisplayName = (channel: any) => {
 </script>
 
 <template>
-  <aside class="w-64 bg-black border-r border-white/10 flex flex-col">
+  <aside class="w-64 bg-[#0d1117] border-r border-white/5 flex flex-col">
     <!-- Header -->
-    <div class="p-4 border-b border-white/10 flex items-center justify-between">
+    <div class="p-4 border-b border-white/5 flex items-center justify-between">
       <div class="flex items-center gap-2">
-        <div class="w-8 h-8 rounded-lg bg-sky-500/20 flex items-center justify-center">
-          <Hash class="w-5 h-5 text-sky-400" />
+        <div class="w-8 h-8 rounded-lg bg-sky-900/20 flex items-center justify-center">
+          <Hash class="w-5 h-5 text-sky-800" />
         </div>
-        <span class="font-bold text-white tracking-tight">Channels</span>
+        <span class="font-bold text-slate-300 tracking-tight">Channels</span>
       </div>
       <div class="flex items-center gap-1">
         <button 
           @click="$emit('new-dm')"
-          class="w-8 h-8 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors text-slate-300 hover:text-white border border-white/5"
+          class="w-8 h-8 rounded-lg hover:bg-white/5 flex items-center justify-center transition-colors text-slate-600 hover:text-slate-300"
           title="New Direct Message"
         >
           <MessageSquare class="w-4 h-4" />
         </button>
         <button 
           @click="$emit('create-channel')"
-          class="w-8 h-8 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors text-slate-300 hover:text-white border border-white/5"
+          class="w-8 h-8 rounded-lg hover:bg-white/5 flex items-center justify-center transition-colors text-slate-600 hover:text-slate-300"
           title="New Channel"
         >
           <Plus class="w-5 h-5" />
@@ -55,12 +55,12 @@ const getDisplayName = (channel: any) => {
         :class="[
           'w-full flex items-center justify-between px-3 py-2 rounded-lg transition-all group font-medium relative',
           activeChannelId === channel.id 
-            ? 'bg-white/10 text-white' 
-            : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
+            ? 'bg-white/5 text-slate-100' 
+            : 'text-slate-500 hover:bg-white/5 hover:text-slate-300'
         ]"
       >
         <!-- Active indicator line -->
-        <div v-if="activeChannelId === channel.id" class="absolute left-[-8px] top-2 bottom-2 w-1 bg-sky-400 rounded-r-full"></div>
+        <div v-if="activeChannelId === channel.id" class="absolute left-[-8px] top-2 bottom-2 w-1 bg-sky-800 rounded-r-full"></div>
 
         <div class="flex items-center gap-3 overflow-hidden">
           <component 
