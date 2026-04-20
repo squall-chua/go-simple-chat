@@ -2,38 +2,63 @@ package ws
 
 import (
 	"context"
-	"crypto/tls"
+	"fmt"
 	"io"
 	"net/http"
 
-	chatv1 "go-simple-chat/api/v1"
 	"github.com/gorilla/websocket"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+// StreamHandler defines how to handle a specific streaming RPC
+type StreamHandler struct {
+	NewRequest  func() proto.Message
+	NewResponse func() proto.Message
+	Call        func(ctx context.Context, conn grpc.ClientConnInterface) (grpc.ClientStream, error)
+}
+
 type Bridge struct {
-	client chatv1.ChatServiceClient
+	conn     grpc.ClientConnInterface
+	handlers map[string]StreamHandler
 }
 
-func NewProxy(grpcServer *grpc.Server, tlsConfig *tls.Config) http.Handler {
-	// In our unified server, we can't easily dial ourselves via TLS during bootstrap efficiently,
-	// so we'll use the ChatService directly if we can, or just keep the bridge simple.
-	return &Bridge{} // We'll initialize the client on the first request or via a setter
+func NewProxy() *Bridge {
+	return &Bridge{
+		handlers: make(map[string]StreamHandler),
+	}
 }
 
-func (b *Bridge) SetClient(c chatv1.ChatServiceClient) {
-	b.client = c
+func (b *Bridge) SetConn(conn grpc.ClientConnInterface) {
+	b.conn = conn
+}
+
+func (b *Bridge) RegisterHandler(method string, h StreamHandler) {
+	b.handlers[method] = h
 }
 
 func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if b.client == nil {
+	if b.conn == nil {
 		http.Error(w, "Bridge not initialized", http.StatusInternalServerError)
+		return
+	}
+
+	// Determine method to route to from URL path
+	method := r.URL.Path
+	if method == "" || method == "/" {
+		http.Error(w, "Missing method in path (use /Service/Method)", http.StatusBadRequest)
+		return
+	}
+
+	handler, ok := b.handlers[method]
+	if !ok {
+		http.Error(w, fmt.Sprintf("Unsupported method: %s", method), http.StatusBadRequest)
 		return
 	}
 
@@ -43,7 +68,7 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	// Extract session token from headers, cookies, or query params
+	// Extract session token
 	token := r.Header.Get("x-session-token")
 	if token == "" {
 		token = r.URL.Query().Get("token")
@@ -54,18 +79,17 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Prepare gRPC context with metadata
+	// Prepare gRPC context
 	md := metadata.Pairs("x-session-token", token)
 	ctx, cancel := context.WithCancel(metadata.NewOutgoingContext(r.Context(), md))
 	defer cancel()
 
-	stream, err := b.client.BidiStreamChat(ctx)
+	stream, err := handler.Call(ctx, b.conn)
 	if err != nil {
-		conn.WriteJSON(map[string]string{"error": "failed to connect to chat stream: " + err.Error()})
+		conn.WriteJSON(map[string]string{"error": "failed to connect to stream: " + err.Error()})
 		return
 	}
 
-	// Bidirectional pipe
 	errCh := make(chan error, 2)
 
 	// Browser -> Server
@@ -76,12 +100,11 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				errCh <- err
 				return
 			}
-			var msg chatv1.StreamMessageRequest
-			if err := protojson.Unmarshal(p, &msg); err != nil {
-				// Log or handle unmarshal error?
+			req := handler.NewRequest()
+			if err := protojson.Unmarshal(p, req); err != nil {
 				continue
 			}
-			if err := stream.Send(&msg); err != nil {
+			if err := stream.SendMsg(req); err != nil {
 				errCh <- err
 				return
 			}
@@ -91,7 +114,8 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Server -> Browser
 	go func() {
 		for {
-			resp, err := stream.Recv()
+			resp := handler.NewResponse()
+			err := stream.RecvMsg(resp)
 			if err == io.EOF {
 				errCh <- nil
 				return
@@ -101,7 +125,6 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			
-			// Marshal with protojson to respect snake_case (UseProtoNames: true)
 			m := protojson.MarshalOptions{UseProtoNames: true, EmitUnpopulated: true}
 			b, err := m.Marshal(resp)
 			if err != nil {

@@ -52,17 +52,25 @@ watch(messages, (newMsgs) => {
   }
 }, { deep: true })
 
-const scrollToBottom = () => {
-  if (scrollContainer.value) {
-    scrollContainer.value.scrollTop = scrollContainer.value.scrollHeight
+const smartScroll = () => {
+  if (!scrollContainer.value) return
+
+  // 1. Try to find the unread marker
+  const marker = scrollContainer.value.querySelector('#unread-marker')
+  if (marker && initialReadId.value) {
+    marker.scrollIntoView({ block: 'center' })
+    return
   }
+
+  // 2. Default: scroll to bottom
+  scrollContainer.value.scrollTop = scrollContainer.value.scrollHeight
 }
 
 watch(messages, () => {
-  setTimeout(scrollToBottom, 50)
+  setTimeout(smartScroll, 50)
 }, { deep: true })
 
-onMounted(scrollToBottom)
+onMounted(smartScroll)
 
 const isOnlyEmoji = (content: string) => {
   if (!content) return false
@@ -130,7 +138,7 @@ const isSameSender = (index: number) => {
       <template v-else-if="messages.length > 0">
         <template v-for="(msg, index) in messages" :key="msg.message_id">
           <!-- Unread Separator -->
-          <div v-if="isFirstUnread(index)" class="flex items-center gap-4 py-4">
+          <div v-if="isFirstUnread(index)" id="unread-marker" class="flex items-center gap-4 py-4">
             <div class="flex-1 h-px bg-red-500/30"></div>
             <span class="text-[10px] font-bold text-red-500 uppercase tracking-[0.2em] px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/20">New Messages</span>
             <div class="flex-1 h-px bg-red-500/30"></div>

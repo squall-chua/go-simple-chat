@@ -5,8 +5,8 @@ import (
 	"crypto/ed25519"
 	"crypto/x509"
 	"fmt"
-	"go-simple-chat/internal/model"
 	internalcrypto "go-simple-chat/internal/crypto"
+	"go-simple-chat/internal/model"
 	"go-simple-chat/internal/repository"
 	"time"
 
@@ -15,8 +15,8 @@ import (
 )
 
 type UserService struct {
-	userRepo   repository.UserRepository
-	ca         *internalcrypto.CA
+	userRepo      repository.UserRepository
+	ca            *internalcrypto.CA
 	challengeRepo repository.ChallengeRepository
 }
 
@@ -29,10 +29,31 @@ func NewUserService(userRepo repository.UserRepository, challengeRepo repository
 }
 
 func (s *UserService) Register(ctx context.Context, username string, publicKey []byte) (*model.User, []byte, []byte, error) {
+	// Parse the provided public key (could be raw Ed25519 or PKIX)
+	var pub any
+	var err error
+	if len(publicKey) == 32 {
+		// Treat as raw Ed25519 public key (common for browser clients)
+		pub = ed25519.PublicKey(publicKey)
+	} else if len(publicKey) > 0 {
+		pub, err = x509.ParsePKIXPublicKey(publicKey)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("invalid public key: %w", err)
+		}
+	} else {
+		return nil, nil, nil, fmt.Errorf("public key is required")
+	}
+
+	// Normalize to PKIX for consistent storage and cross-client compatibility (E2E)
+	normalizedKey, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to normalize public key: %w", err)
+	}
+
 	user := &model.User{
 		ID:        bson.NewObjectID(),
 		Username:  username,
-		PublicKey: publicKey,
+		PublicKey: normalizedKey, // Always store PKIX
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
@@ -41,19 +62,7 @@ func (s *UserService) Register(ctx context.Context, username string, publicKey [
 		return nil, nil, nil, fmt.Errorf("failed to create user: %w", err)
 	}
 
-	// Issue client certificate using the provided public key
-	var pub any
-	if len(publicKey) == 32 {
-		// Treat as raw Ed25519 public key (common for browser clients)
-		pub = ed25519.PublicKey(publicKey)
-	} else if len(publicKey) > 0 {
-		var err error
-		pub, err = x509.ParsePKIXPublicKey(publicKey)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("invalid public key: %w", err)
-		}
-	}
-
+	// Issue client certificate using the parsed public key
 	certPEM, keyPEM, err := s.ca.IssueUserCert(user.ID.Hex(), pub, nil)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to issue cert: %w", err)

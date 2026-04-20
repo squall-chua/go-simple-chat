@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/pem"
@@ -78,7 +79,18 @@ func (s *SessionService) IssueToken(ctx context.Context, certPEM []byte) (string
 	if err != nil {
 		return "", "", "", fmt.Errorf("user not found: %w", err)
 	}
-	
+
+	// 4. Verify public key matches
+	// Certificate public key must match the one we have on file for this user
+	certPubKey, err := x509.MarshalPKIXPublicKey(cert.PublicKey)
+	if err != nil {
+		return "", "", "", fmt.Errorf("failed to marshal certificate public key: %w", err)
+	}
+
+	if !bytes.Equal(certPubKey, user.PublicKey) {
+		return "", "", "", errors.New("certificate public key does not match user's registered public key")
+	}
+
 	username := user.Username
 
 	// 4. Generate token

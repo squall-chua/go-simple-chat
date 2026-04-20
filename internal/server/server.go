@@ -7,14 +7,16 @@ import (
 	"net/http"
 	"strings"
 
-	"go-simple-chat/internal/transport/ws"
-	"go-simple-chat/internal/service"
 	chatv1 "go-simple-chat/api/v1"
+	"go-simple-chat/internal/service"
+	"go-simple-chat/internal/transport/ws"
+
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 type Server struct {
@@ -24,6 +26,7 @@ type Server struct {
 	uploadService  *service.UploadService
 	sessionService *service.SessionService
 	httpServer     *http.Server
+	wsConn         *grpc.ClientConn
 }
 
 func NewServer(port string, grpcServer *grpc.Server) *Server {
@@ -68,12 +71,12 @@ func (s *Server) Start(ctx context.Context, tlsConfig *tls.Config) error {
 			},
 		}),
 	)
-	
+
 	// Ensure the gateway client doesn't present the server cert as its own identity
 	gwDialTLS := tlsConfig.Clone()
 	gwDialTLS.Certificates = nil
 	gwDialTLS.InsecureSkipVerify = true
-	
+
 	opts := []grpc.DialOption{grpc.WithTransportCredentials(credentials.NewTLS(gwDialTLS))}
 	err = chatv1.RegisterChatServiceHandlerFromEndpoint(ctx, gwmux, "localhost:"+s.port, opts)
 	if err != nil {
@@ -82,8 +85,28 @@ func (s *Server) Start(ctx context.Context, tlsConfig *tls.Config) error {
 
 	// 2. Setup WebSocket Proxy
 	// The bridge needs a gRPC client to talk to the local server
-	wsBridge := ws.NewProxy(nil, tlsConfig).(*ws.Bridge)
-	
+	wsBridge := ws.NewProxy()
+
+	// Register chat handlers
+	wsBridge.RegisterHandler(chatv1.ChatService_BidiStreamChat_FullMethodName, ws.StreamHandler{
+		NewRequest:  func() proto.Message { return &chatv1.StreamMessageRequest{} },
+		NewResponse: func() proto.Message { return &chatv1.StreamMessageResponse{} },
+		Call: func(ctx context.Context, conn grpc.ClientConnInterface) (grpc.ClientStream, error) {
+			return chatv1.NewChatServiceClient(conn).BidiStreamChat(ctx)
+		},
+	})
+
+	// Dial the local gRPC server once for the bridge
+	dialTLS := tlsConfig.Clone()
+	dialTLS.Certificates = nil
+	dialTLS.InsecureSkipVerify = true
+	wsConn, err := grpc.Dial("localhost:"+s.port, grpc.WithTransportCredentials(credentials.NewTLS(dialTLS)))
+	if err != nil {
+		return err
+	}
+	s.wsConn = wsConn
+	wsBridge.SetConn(wsConn)
+
 	// 3. Main HTTP Router
 	mainMux := http.NewServeMux()
 	if s.sessionHandler != nil {
@@ -96,19 +119,6 @@ func (s *Server) Start(ctx context.Context, tlsConfig *tls.Config) error {
 	rootHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Handle WebSockets First
 		if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
-			// Lazily initialize the client if needed
-			// We dial localhost using the same TLS config we're serving with
-			// but we MUST clear the Certificates so the bridge doesn't present the 
-			// server cert as its own identity. We also skip verification for the self-dial.
-			dialTLS := tlsConfig.Clone()
-			dialTLS.Certificates = nil
-			dialTLS.InsecureSkipVerify = true 
-			
-			conn, err := grpc.Dial("localhost:"+s.port, grpc.WithTransportCredentials(credentials.NewTLS(dialTLS)))
-			if err == nil {
-				wsBridge.SetClient(chatv1.NewChatServiceClient(conn))
-			}
-			
 			wsBridge.ServeHTTP(w, r)
 			return
 		}
@@ -135,6 +145,9 @@ func (s *Server) Start(ctx context.Context, tlsConfig *tls.Config) error {
 }
 
 func (s *Server) Stop() {
+	if s.wsConn != nil {
+		s.wsConn.Close()
+	}
 	if s.httpServer != nil {
 		s.httpServer.Shutdown(context.Background())
 	}
