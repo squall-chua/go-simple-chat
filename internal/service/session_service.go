@@ -3,7 +3,9 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -38,7 +40,24 @@ func NewSessionService(sessionRepo repository.SessionRepository, userRepo reposi
 	}, nil
 }
 
-func (s *SessionService) IssueToken(ctx context.Context, certPEM []byte) (string, string, string, error) {
+func (s *SessionService) CreateChallenge(ctx context.Context) (string, error) {
+	nonce := uuid.New().String()
+	// Reuse existing challenge repository logic if possible, or use sessionRepo if it supports TTL blobs
+	// For simplicity, we use a prefixed key in sessionRepo
+	if err := s.sessionRepo.Store(ctx, "challenge:"+nonce, "pending", 5*time.Minute); err != nil {
+		return "", err
+	}
+	return nonce, nil
+}
+
+func (s *SessionService) IssueToken(ctx context.Context, certPEM []byte, nonce string, signatureHex string) (string, string, string, error) {
+	// 0. Verify Nonce
+	status, err := s.sessionRepo.Get(ctx, "challenge:"+nonce)
+	if err != nil || status != "pending" {
+		return "", "", "", errors.New("invalid or expired challenge")
+	}
+	_ = s.sessionRepo.Delete(ctx, "challenge:"+nonce)
+
 	// 1. Parse and verify certificate
 	block, _ := pem.Decode(certPEM)
 	if block == nil {
@@ -89,6 +108,23 @@ func (s *SessionService) IssueToken(ctx context.Context, certPEM []byte) (string
 
 	if !bytes.Equal(certPubKey, user.PublicKey) {
 		return "", "", "", errors.New("certificate public key does not match user's registered public key")
+	}
+
+	// 5. Verify Signature (Proof of Possession)
+	sig, err := base64.StdEncoding.DecodeString(signatureHex)
+	if err != nil {
+		return "", "", "", errors.New("invalid signature format")
+	}
+
+	// Verify the signature against the nonce using the public key from the certificate
+	msg := []byte(nonce)
+	pub, ok := cert.PublicKey.(ed25519.PublicKey)
+	if !ok {
+		return "", "", "", errors.New("unsupported public key type; only Ed25519 is accepted")
+	}
+
+	if !ed25519.Verify(pub, msg, sig) {
+		return "", "", "", errors.New("signature verification failed")
 	}
 
 	username := user.Username

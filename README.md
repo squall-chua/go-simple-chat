@@ -4,7 +4,7 @@ A high-performance, horizontally-scalable chat service architecture in Go implem
 
 ## Features
 
-- **Multiplexed gRPC & REST:** Serving gRPC, gRPC-Gateway (REST), and WebSockets on a single port (8080) via `cmux`.
+- **Dual-Port Security Model:** Serving strict mTLS for direct clients on port 8080 and a hardened session-based gateway for browsers on port 8081.
 - **Strict mTLS Identity:** TLS 1.3 with mutual authentication and application-layer Public Key Pinning (PKP) to prevent impersonation.
 - **Cryptographic Certificate Renewal:** A secure challenge-response protocol using signed nonces for safe identity rotation.
 - **Unified Media Metadata:** Server-side support for diverse media payloads (Image, Video, Audio, Document) with unified storage logic.
@@ -83,22 +83,34 @@ Optimized for long-term focus and OLED displays, the web client uses a custom **
 - **Smart Scroll:** When opening a channel, the view automatically centers on the **"New Messages"** marker, preserving your reading context.
 - **Context-Aware Icons:** Media attachments are tagged with type-specific icons (🎥, 🎵, 📄, 📦) for instant identification.
 
-### 3. Secure Renewal Lifecycle
+### 3. Hardened Identity Lifecycle
 
-If your mTLS certificate expires, the web client handles the cryptographic recovery seamlessly:
+Go Simple Chat implements a robust **Proof-of-Possession (PoP)** mechanism to manage user identities via modern **Ed25519** cryptography:
 
-1. **Challenge Request:** The client fetches a unique nonce from the server.
-2. **Signature Generation:** Your private key signs the challenge locally (Ed25519 or ECDSA).
-3. **Verification & Issue:** Upon successful signature verification, the server issues a fresh certificate.
-4. **Download:** The dashboard provides an instant `.crt` download to restore your identity.
+1. **Challenge Request:** Both the Web and TUI clients fetch a unique, time-limited nonce from the server.
+2. **Local Signature:** The client signs this nonce using their **Private Key** locally in the browser (via `SubtleCrypto`) or terminal—private keys never leave the client device.
+3. **Verification & Issue:** The server verifies the signature against the nonce using the **Pinned Public Key** stored in the database.
+4. **Renewal/Session:** Upon success, the server either issues a fresh certificate (Renewal) or stores an `HttpOnly` session token (Web Login).
 
 ### 4. Web Session Bridge
 
-The web client uses a session-based authentication flow to bridge browser environments with the mTLS-strict backend:
+The web client securely bridges standard browser environments with the mTLS-strict backend via the **Public Gateway (Port 8081)**:
 
-1. **Certificate Exchange:** The client sends its public certificate to the `/api/session` endpoint.
-2. **Token Issuance:** The server verifies the certificate's authenticity (and its public key pinning) and issues a short-lived, stateless **Session Token**.
-3. **Authorization:** Subsequent API and WebSocket requests are authenticated via the `x-session-token` header or cookie. This allows the web client to maintain mTLS-level identity assurance without requiring the browser to manage client certificates for every individual RPC call.
+1. **Replay Protection:** The client performs a cryptographic challenge-response handshake (`POST /api/session`) to prove possession of the private key, preventing attackers from replaying captured public certificates.
+2. **Token Issuance:** The server verifies the PoP and issued a short-lived, `HttpOnly`, `Secure` **Session Token**.
+3. **Authorization:** Subsequent API and WebSocket requests are authenticated via the `x-session-token` header. The gateway validates the token and proxies the request to the internal mTLS core (Port 8080) using a loopback-trusted identity bridge.
+
+## ⚙️ Configuration
+
+The server supports the following environment variables for security hardening:
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `PORT` | `8080` | Secure gRPC/mTLS port. |
+| `PUBLIC_PORT` | `8081` | Public REST/WebSocket gateway port. |
+| `TRUSTED_PROXY_ADDRS` | `127.0.0.1,::1` | IPs allowed to inject internal identity headers. |
+| `ALLOWED_ORIGINS` | `*` | Allowed CORS origins (comma-separated). |
+| `CERT_CN` | `localhost` | Common Name for automatically generated server certs. |
 
 ## Quickstart
 
@@ -156,11 +168,11 @@ npm run dev
 ## Architecture
 
 - **Hexagonal Modular Monolith:** Core logic decoupled from transport and storage.
-- **Real-Time Roster Sync:** Invisible system signals trigger automatic UI refreshes when participants are added.
-- **WebSocket mTLS:** The WebSocket bridge propagates TLS identities into gRPC metadata.
+- **Trusted Bridge Model:** The public gateway validates web sessions and proxies them to the internal gRPC core using service-level certificates.
+- **WebSocket Gateway:** Real-time streams are authenticated via session tokens passed as query parameters for cross-origin compatibility.
 - **Public Key Pinning:** Prevents impersonation by verifying the certificate's public key against the user's permanent database record.
 
 ## Monitoring
 
-- **Metrics:** `https://localhost:8080/metrics`
-- **Dashboards:** Grafana (port 3000) and Prometheus (port 9090) are included in the stack.
+- **Metrics:** `https://localhost:8081/metrics`
+- **Dashboards:** Grafana (port 3002) and Prometheus (port 9090) are included in the stack.

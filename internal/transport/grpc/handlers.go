@@ -10,6 +10,8 @@ import (
 	"go-simple-chat/internal/metrics"
 	"go-simple-chat/internal/model"
 	"go-simple-chat/internal/service"
+	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +32,7 @@ type ChatHandler struct {
 	presenceService *service.PresenceService
 	sessionService  *service.SessionService
 	uploadService   *service.UploadService
+	trustedProxies  []string
 }
 
 func NewChatHandler(
@@ -38,6 +41,7 @@ func NewChatHandler(
 	presenceService *service.PresenceService,
 	sessionService *service.SessionService,
 	uploadService *service.UploadService,
+	trustedProxies []string,
 ) *ChatHandler {
 	return &ChatHandler{
 		userService:     userService,
@@ -45,6 +49,7 @@ func NewChatHandler(
 		presenceService: presenceService,
 		sessionService:  sessionService,
 		uploadService:   uploadService,
+		trustedProxies:  trustedProxies,
 	}
 }
 
@@ -77,41 +82,56 @@ func (h *ChatHandler) getUserIDFromContext(ctx context.Context) (bson.ObjectID, 
 	var clientCert *x509.Certificate
 	var sessionToken string
 
-	// 1. Try peer info (direct gRPC mTLS)
-	if p, ok := peer.FromContext(ctx); ok {
-		if tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo); ok && len(tlsInfo.State.PeerCertificates) > 0 {
-			clientCert = tlsInfo.State.PeerCertificates[0]
-		}
-	}
-
-	// 2. Try metadata (proxied gRPC, WebSocket, or gRPC-Gateway)
+	// 1. Extract session token from metadata (Web/Bridge client)
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
-		// Check for internal cert (proxied from WS/Gateway)
-		if clientCert == nil {
-			vals := md.Get("x-internal-client-cert")
-			if len(vals) > 0 {
-				der, err := base64.StdEncoding.DecodeString(vals[0])
-				if err == nil {
-					cert, err := x509.ParseCertificate(der)
-					if err == nil {
-						clientCert = cert
-					}
-				}
-			}
-		}
-		// Check for session token (Web client)
 		tokens := md.Get("x-session-token")
 		if len(tokens) > 0 {
 			sessionToken = tokens[0]
 		}
 	}
 
-	// Case A: Identity via Certificate (mTLS)
+	// 2. Extract client certificate from peer info (Direct mTLS)
+	if p, ok := peer.FromContext(ctx); ok {
+		if tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo); ok && len(tlsInfo.State.PeerCertificates) > 0 {
+			clientCert = tlsInfo.State.PeerCertificates[0]
+		}
+
+		// Support for trusted forwarders (gRPC-Gateway without direct mTLS)
+		if clientCert == nil && h.isTrustedProxy(p.Addr) {
+			if md, ok := metadata.FromIncomingContext(ctx); ok {
+				vals := md.Get("x-internal-client-cert")
+				if len(vals) > 0 {
+					der, err := base64.StdEncoding.DecodeString(vals[0])
+					if err == nil {
+						cert, err := x509.ParseCertificate(der)
+						if err == nil {
+							clientCert = cert
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Case A: Prefer Session Token if present (used by WebSocket Bridge and gRPC-Gateway)
+	if sessionToken != "" && h.sessionService != nil {
+		userID, err := h.sessionService.ValidateToken(ctx, sessionToken)
+		if err == nil {
+			oid, err := bson.ObjectIDFromHex(userID)
+			if err == nil {
+				return oid, nil
+			}
+		}
+		// If token was provided but invalid, we could return error, but let's check cert as fallback
+	}
+
+	// Case B: Fallback to Certificate Identity
 	if clientCert != nil {
 		cn := clientCert.Subject.CommonName
 		oid, err := bson.ObjectIDFromHex(cn)
 		if err != nil {
-			return bson.NilObjectID, status.Errorf(codes.Unauthenticated, "invalid user id in certificate: %v", err)
+			// If it's not a valid OID (e.g. server cert), just fail auth if no session token was valid
+			return bson.NilObjectID, status.Error(codes.Unauthenticated, "authentication required: no valid certificate or session token found")
 		}
 
 		// Verify user exists
@@ -128,18 +148,29 @@ func (h *ChatHandler) getUserIDFromContext(ctx context.Context) (bson.ObjectID, 
 		return oid, nil
 	}
 
-	// Case B: Identity via Session Token (Web Bridge)
-	if sessionToken != "" && h.sessionService != nil {
-		userID, err := h.sessionService.ValidateToken(ctx, sessionToken)
-		if err == nil {
-			oid, err := bson.ObjectIDFromHex(userID)
-			if err == nil {
-				return oid, nil
+	return bson.NilObjectID, status.Error(codes.Unauthenticated, "authentication required: no valid certificate or session token found")
+}
+
+func (h *ChatHandler) isTrustedProxy(addr net.Addr) bool {
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		host = addr.String()
+	}
+
+	ip := net.ParseIP(host)
+	for _, tp := range h.trustedProxies {
+		if strings.Contains(tp, "/") {
+			_, subnet, err := net.ParseCIDR(tp)
+			if err == nil && subnet.Contains(ip) {
+				return true
+			}
+		} else {
+			if tp == host {
+				return true
 			}
 		}
 	}
-
-	return bson.NilObjectID, status.Error(codes.Unauthenticated, "authentication required: no valid certificate or session token found")
+	return false
 }
 
 func (h *ChatHandler) HealthCheck(ctx context.Context, req *chatv1.HealthCheckRequest) (*chatv1.HealthCheckResponse, error) {

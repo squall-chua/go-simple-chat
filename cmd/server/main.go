@@ -78,6 +78,15 @@ func main() {
 		logger.Fatal("failed to create TLS config", zap.Error(err))
 	}
 
+	publicTLSConfig, err := crypto.NewPublicTLSConfig(
+		filepath.Join(cfg.CertDir, "ca.crt"),
+		serverCertPath,
+		serverKeyPath,
+	)
+	if err != nil {
+		logger.Fatal("failed to create public TLS config", zap.Error(err))
+	}
+
 	// 4. Services
 	userService := service.NewUserService(userRepo, challengeRepo, ca)
 	presenceService := service.NewPresenceService(chRepo, userRepo, b)
@@ -87,19 +96,26 @@ func main() {
 	uploadService, _ := service.NewUploadService(cfg)
 
 	// 5. gRPC Handler
-	handler := chatgrpc.NewChatHandler(userService, chatService, presenceService, sessionService, uploadService)
+	handler := chatgrpc.NewChatHandler(userService, chatService, presenceService, sessionService, uploadService, cfg.TrustedProxyAddrs)
 	grpcSrv := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsConfig)))
 	chatv1.RegisterChatServiceServer(grpcSrv, handler)
 
 	// 6. Multiplexed Server
-	srv := server.NewServer(cfg.Port, grpcSrv)
+	srv := server.NewServer(cfg.Port, cfg.PublicPort, cfg.CertCN, cfg.AllowedOrigins, grpcSrv)
 	srv.SetSessionHandler(sessionHandler)
 	srv.SetUploadService(uploadService, sessionService)
-	
+
 	go func() {
-		logger.Info("server starting", zap.String("port", cfg.Port))
+		logger.Info("secure server starting", zap.String("port", cfg.Port))
 		if err := srv.Start(ctx, tlsConfig); err != nil && err != context.Canceled {
-			logger.Fatal("server error", zap.Error(err))
+			logger.Error("secure server error", zap.Error(err))
+		}
+	}()
+
+	go func() {
+		logger.Info("public server starting", zap.String("port", cfg.PublicPort))
+		if err := srv.StartPublic(ctx, publicTLSConfig); err != nil && err != context.Canceled {
+			logger.Error("public server error", zap.Error(err))
 		}
 	}()
 

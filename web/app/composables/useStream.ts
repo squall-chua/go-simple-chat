@@ -29,11 +29,10 @@ export const useStream = () => {
     // In a real prod environment, we'd use a cookie or query param
     // For this bridge, we'll try the query param approach if the proxy supports it,
     // or we assume the browser will send the cookie if we set it in useAuth.
-    // Derive WS URL from API base - Point to the explicit gRPC bidirectional stream endpoint
-    const apiBase = (config.public.apiBase as string) || 'https://localhost:8080'
-    const wsUrl = apiBase.replace(/^http/, 'ws') + `/chat.v1.ChatService/BidiStreamChat?token=${token.value}`
+    // Use configured WebSocket base
+    // Use configured WebSocket base and pass token as query param for robustness
+    const wsUrl = `${config.public.wsBase}/chat.v1.ChatService/BidiStreamChat?token=${token.value}`
     
-    // We set the auth_token cookie in useAuth.login, which the browser will send automatically
     socket.value = new WebSocket(wsUrl)
 
     socket.value.onmessage = (event) => {
@@ -96,8 +95,6 @@ export const useStream = () => {
       socket.value = null
     }
   }
-
-  onUnmounted(() => disconnect())
 
   return {
     connect,

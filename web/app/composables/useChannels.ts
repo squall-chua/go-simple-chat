@@ -81,9 +81,9 @@ export const useChannels = () => {
   const { token } = useAuth()
   const { showError } = useToast()
 
-  onMounted(() => {
+  if (process.client) {
     initGlobalListener()
-  })
+  }
 
   const fetchChannels = async () => {
     if (!token.value) return

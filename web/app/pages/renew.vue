@@ -1,18 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { RefreshCw, User, Key, ArrowRight, CheckCircle2, ShieldAlert, Download } from 'lucide-vue-next'
-import { p256 } from '@noble/curves/nist.js'
-import { sha256, sha512 } from '@noble/hashes/sha2.js'
-import * as ed from '@noble/ed25519'
-
-// Configure ed25519 to use noble-hashes sha512 (v3.x style)
-ed.hashes.sha512 = (m: Uint8Array) => sha512(m)
-ed.hashes.sha512Async = (m: Uint8Array) => Promise.resolve(sha512(m))
-
-// Fix for environments where crypto.webcrypto is missing or different
-if (typeof window !== 'undefined') {
-  if (!globalThis.crypto) (globalThis as any).crypto = window.crypto
-}
+import { signMessage } from '@/utils/crypto'
 
 const { login } = useAuth()
 const { showSuccess, showError } = useToast()
@@ -38,38 +27,6 @@ const readFile = (file: File): Promise<string> => {
   })
 }
 
-// Helper to extract private key bytes and type from PEM
-const extractPrivateKeyFromPEM = (pem: string): { bytes: Uint8Array, type: 'ed25519' | 'ecdsa' } => {
-  const clean = pem.replace(/-----(BEGIN|END) (EC|ED25519|PRIVATE) KEY-----/g, '').replace(/\s/g, '')
-  const der = Uint8Array.from(atob(clean), c => c.charCodeAt(0))
-  
-  // Ed25519 PKCS8 detection (from register.vue)
-  // Header: 30 2e 02 01 00 30 05 06 03 2b 65 70 04 22 04 20
-  if (der[0] === 0x30 && der[7] === 0x06 && der[8] === 0x03 && der[9] === 0x2b && der[10] === 0x65 && der[11] === 0x70) {
-    return { bytes: der.slice(16, 48), type: 'ed25519' }
-  }
-
-  // SEC1 format (EC PRIVATE KEY) for P256
-  if (der[0] === 0x30 && der[7] === 0x04 && der[8] === 0x20) {
-    return { bytes: der.slice(9, 41), type: 'ecdsa' }
-  }
-  
-  // Fallback: assume Ed25519 for simple 32-byte chunks or default
-  return { bytes: der.slice(-32), type: 'ed25519' }
-}
-
-const hexToBytes = (hex: string): Uint8Array => {
-  const bytes = new Uint8Array(hex.length / 2)
-  for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(hex.substr(i * 2, 2), 16)
-  }
-  return bytes
-}
-
-const bytesToHex = (bytes: Uint8Array): string => {
-  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
-}
-
 const handleRenew = async () => {
   if (!username.value || !keyFile.value) {
     showError('Username and private key are required')
@@ -79,7 +36,6 @@ const handleRenew = async () => {
   isLoading.value = true
   try {
     const keyPEM = await readFile(keyFile.value)
-    const { bytes: privKey, type: keyType } = extractPrivateKeyFromPEM(keyPEM)
     
     // 1. Get Challenge
     const challengeRes = await fetch(`${config.public.apiBase}/v1/auth/challenge`, {
@@ -97,18 +53,7 @@ const handleRenew = async () => {
 
     // 2. Sign Challenge
     const challengeStr = "RENEW_CERT:" + nonce
-    const challengeBytes = new TextEncoder().encode(challengeStr)
-    let sigB64 = ''
-
-    if (keyType === 'ed25519') {
-      const signature = await ed.sign(challengeBytes, privKey)
-      sigB64 = btoa(Array.from(signature).map(b => String.fromCharCode(b)).join(''))
-    } else {
-      const msgHash = sha256(challengeBytes)
-      const signature = p256.sign(msgHash, privKey)
-      const sigBytes = (signature as any).toDER?.() || signature
-      sigB64 = btoa(Array.from(sigBytes as Uint8Array).map(b => String.fromCharCode(b)).join(''))
-    }
+    const sigB64 = await signMessage(challengeStr, keyPEM)
 
     // 3. Submit Renewal
     const renewRes = await fetch(`${config.public.apiBase}/v1/auth/renew`, {

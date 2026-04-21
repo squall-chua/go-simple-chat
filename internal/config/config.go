@@ -25,6 +25,9 @@ type Config struct {
 	CertCN             string   `mapstructure:"CERT_CN"`
 	CertDNS            []string `mapstructure:"CERT_DNS"`
 	GracefulTimeoutSec int      `mapstructure:"GRACEFUL_TIMEOUT_SEC"`
+	PublicPort         string   `mapstructure:"PUBLIC_PORT"`
+	TrustedProxyAddrs  []string `mapstructure:"TRUSTED_PROXY_ADDRS"`
+	AllowedOrigins     []string `mapstructure:"ALLOWED_ORIGINS"`
 }
 
 func LoadConfig() *Config {
@@ -44,6 +47,9 @@ func LoadConfig() *Config {
 	pflag.String("cert-cn", "localhost", "Common Name for the server certificate")
 	pflag.StringSlice("cert-dns", []string{"localhost", "127.0.0.1"}, "DNS names for the server certificate")
 	pflag.Int("graceful-timeout", 30, "Graceful shutdown timeout in seconds")
+	pflag.String("public-port", "8081", "Public (unauthenticated) port")
+	pflag.StringSlice("trusted-proxy-addrs", []string{"127.0.0.1", "::1"}, "Trusted proxy CIDRs/IPs")
+	pflag.StringSlice("allowed-origins", []string{"https://localhost:3000"}, "CORS allowed origins")
 
 	pflag.Parse()
 
@@ -64,6 +70,9 @@ func LoadConfig() *Config {
 	viper.BindPFlag("CERT_CN", pflag.Lookup("cert-cn"))
 	viper.BindPFlag("CERT_DNS", pflag.Lookup("cert-dns"))
 	viper.BindPFlag("GRACEFUL_TIMEOUT_SEC", pflag.Lookup("graceful-timeout"))
+	viper.BindPFlag("PUBLIC_PORT", pflag.Lookup("public-port"))
+	viper.BindPFlag("TRUSTED_PROXY_ADDRS", pflag.Lookup("trusted-proxy-addrs"))
+	viper.BindPFlag("ALLOWED_ORIGINS", pflag.Lookup("allowed-origins"))
 
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()

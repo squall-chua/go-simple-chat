@@ -2,20 +2,22 @@ import { ref, onMounted, onUnmounted } from 'vue'
 
 const onlineUsers = ref<Set<string>>(new Set())
 
+let presenceListenerInitialized = false
+
 export const usePresence = () => {
   const { addPresenceListener } = useStream()
 
-  // Handle incoming presence events
-  onMounted(() => {
-    const cleanup = addPresenceListener((event: { user_id: string, online: boolean }) => {
+  // Handle incoming presence events (Singleton)
+  if (!presenceListenerInitialized && process.client) {
+    presenceListenerInitialized = true
+    addPresenceListener((event: { user_id: string, online: boolean }) => {
       if (event.online) {
         onlineUsers.value.add(event.user_id)
       } else {
         onlineUsers.value.delete(event.user_id)
       }
     })
-    onUnmounted(() => cleanup())
-  })
+  }
   
   const config = useRuntimeConfig()
   const { token, userId } = useAuth()

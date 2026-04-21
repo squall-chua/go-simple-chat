@@ -27,8 +27,33 @@ func NewServerTLSConfig(caCertPath, serverCertPath, serverKeyPath string) (*tls.
 
 	return &tls.Config{
 		Certificates: []tls.Certificate{cert},
-		ClientAuth:   tls.VerifyClientCertIfGiven,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
 		ClientCAs:    caCertPool,
+		RootCAs:      caCertPool,
+		MinVersion:   tls.VersionTLS13,
+		NextProtos:   []string{"h2", "http/1.1"},
+	}, nil
+}
+
+func NewPublicTLSConfig(caCertPath, serverCertPath, serverKeyPath string) (*tls.Config, error) {
+	cert, err := tls.LoadX509KeyPair(serverCertPath, serverKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load server key pair: %v", err)
+	}
+
+	// Also load CA cert for loopback internal dials
+	caCert, err := os.ReadFile(caCertPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read CA cert: %v", err)
+	}
+
+	caCertPool := x509.NewCertPool()
+	if ok := caCertPool.AppendCertsFromPEM(caCert); !ok {
+		return nil, fmt.Errorf("failed to append CA cert to pool")
+	}
+
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
 		RootCAs:      caCertPool,
 		MinVersion:   tls.VersionTLS13,
 		NextProtos:   []string{"h2", "http/1.1"},

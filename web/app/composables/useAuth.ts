@@ -1,4 +1,5 @@
 import { ref, computed, reactive, toRefs } from 'vue'
+import { signMessage } from '@/utils/crypto'
 
 interface AuthState {
   userId: string | null
@@ -21,10 +22,21 @@ export const useAuth = () => {
 
   const login = async (cert: string, key: string) => {
     try {
+      // 1. Get Challenge
+      const challengeResponse = await fetch(`${config.public.apiBase}/api/session/challenge`)
+      if (!challengeResponse.ok) {
+        throw new Error('Failed to get login challenge')
+      }
+      const { nonce } = await challengeResponse.json()
+
+      // 2. Sign Challenge (Proof of Possession)
+      const signature = await signMessage(nonce, key)
+
+      // 3. Submit
       const response = await fetch(`${config.public.apiBase}/api/session`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cert })
+        body: JSON.stringify({ cert, nonce, signature })
       })
 
       if (!response.ok) {
@@ -33,18 +45,15 @@ export const useAuth = () => {
       }
 
       const data = await response.json()
-      
+
       state.token = data.token
       state.userId = data.userId
       state.username = data.username
       state.isAuthenticated = true
 
-      // Set cookie for WebSocket proxy fallback
-      document.cookie = `x-session-token=${data.token}; path=/; SameSite=Lax`
-
       // Save to IndexedDB for persistence
       await saveIdentity(cert, key)
-      
+
       return true
     } catch (err: any) {
       showError(err.message)
@@ -53,6 +62,13 @@ export const useAuth = () => {
   }
 
   const logout = async () => {
+    // Call server to clear cookie
+    try {
+      await fetch(`${config.public.apiBase}/api/session`, { method: 'DELETE' })
+    } catch (e) {
+      console.warn('Silent logout failure', e)
+    }
+
     state.token = null
     state.userId = null
     state.username = null

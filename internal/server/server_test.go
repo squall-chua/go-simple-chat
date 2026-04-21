@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -80,7 +81,7 @@ func (m *mockChallengeRepo) GetAndDelete(ctx context.Context, userID string) (st
 
 func TestServerIntegration(t *testing.T) {
 	// 1. Setup Infra
-	conf := &config.Config{Port: "8081", CertDir: t.TempDir()}
+	conf := &config.Config{Port: "18081", CertDir: t.TempDir()}
 	
 	ca, err := crypto.NewCA(conf.CertDir)
 	require.NoError(t, err)
@@ -100,14 +101,23 @@ func TestServerIntegration(t *testing.T) {
 	sessionRepo := repository.NewMemorySessionRepository()
 	sessionService, _ := service.NewSessionService(sessionRepo, uRepo, ca.GetCACert())
 	
-	chatv1.RegisterChatServiceServer(grpcServer, chatgrpc.NewChatHandler(userService, chatService, presenceSvc, sessionService, nil))
+	chatv1.RegisterChatServiceServer(grpcServer, chatgrpc.NewChatHandler(userService, chatService, presenceSvc, sessionService, nil, []string{"127.0.0.1"}))
 
-	srv := server.NewServer(conf.Port, grpcServer)
+	srv := server.NewServer(conf.Port, "18082", "localhost", []string{"*"}, grpcServer)
 
 	// 2. Start Server
 	caPath := filepath.Join(conf.CertDir, "ca.crt")
-	caKeyPath := filepath.Join(conf.CertDir, "ca.key")
-	tlsConfig, err := crypto.NewServerTLSConfig(caPath, caPath, caKeyPath)
+	
+	// Issue a server cert for the test
+	serverCertPEM, serverKeyPEM, err := ca.IssueUserCert("localhost", nil, []string{"localhost", "127.0.0.1"})
+	require.NoError(t, err)
+	
+	serverCertPath := filepath.Join(conf.CertDir, "server.crt")
+	serverKeyPath := filepath.Join(conf.CertDir, "server.key")
+	os.WriteFile(serverCertPath, serverCertPEM, 0644)
+	os.WriteFile(serverKeyPath, serverKeyPEM, 0600)
+
+	tlsConfig, err := crypto.NewServerTLSConfig(caPath, serverCertPath, serverKeyPath)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -138,7 +148,7 @@ func TestServerIntegration(t *testing.T) {
 		Certificates: []tls.Certificate{cert},
 		RootCAs:      cp,
 		ServerName:   "localhost",
-		InsecureSkipVerify: true, // For localhost tests
+		InsecureSkipVerify: true, // Localhost test environment
 		NextProtos:   []string{"h2", "http/1.1"},
 	}
 

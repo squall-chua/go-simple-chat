@@ -2,9 +2,12 @@ import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { activeChannelId, messages, isLoadingMessages as isLoading } from './useChatState'
 import type { Message } from './useChatState'
 
+// Global listener state
+let messagesListenerInitialized = false
+
 export const useMessages = () => {
   const config = useRuntimeConfig()
-  const { token, userId } = useAuth()
+  const { token } = useAuth()
   const { activeChannelId } = useChannels()
   const { addMessageListener } = useStream()
   const { showError } = useToast()
@@ -48,18 +51,17 @@ export const useMessages = () => {
     }
   }
 
-  // Handle incoming messages from stream
-  onMounted(() => {
-    const cleanup = addMessageListener((msg: Message) => {
+  // Handle incoming messages from stream (Singleton registration)
+  if (!messagesListenerInitialized && process.client) {
+    messagesListenerInitialized = true
+    addMessageListener((msg: Message) => {
       if (msg.channel_id === activeChannelId.value) {
-        // Append if not already there (prevent double echo if any)
         if (!messages.value.find(m => m.message_id === msg.message_id)) {
           messages.value.push(msg)
         }
       }
     })
-    onUnmounted(() => cleanup())
-  })
+  }
 
   return {
     messages,

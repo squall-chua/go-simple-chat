@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 
 const { isAuthenticated, token } = useAuth()
-const { connect } = useStream()
+const { connect, disconnect } = useStream()
 const { fetchChannels } = useChannels()
 const { fetchMessages } = useMessages()
 
@@ -20,6 +20,10 @@ onMounted(async () => {
   // Initialize chat
   await fetchChannels()
   connect()
+})
+
+onUnmounted(() => {
+  disconnect()
 })
 </script>
 

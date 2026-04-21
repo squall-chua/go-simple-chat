@@ -62,13 +62,7 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-	defer conn.Close()
-
-	// Extract session token
+	// Extract session token BEFORE Upgrade (to allow returning HTTP 401)
 	token := r.Header.Get("x-session-token")
 	if token == "" {
 		token = r.URL.Query().Get("token")
@@ -78,6 +72,17 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			token = cookie.Value
 		}
 	}
+
+	if token == "" {
+		http.Error(w, "Unauthorized: session token required", http.StatusUnauthorized)
+		return
+	}
+
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
 
 	// Prepare gRPC context
 	md := metadata.Pairs("x-session-token", token)

@@ -17,7 +17,9 @@ func NewSessionHandler(sessionService *service.SessionService) *SessionHandler {
 }
 
 type sessionRequest struct {
-	Cert string `json:"cert"`
+	Cert      string `json:"cert"`
+	Nonce     string `json:"nonce"`
+	Signature string `json:"signature"`
 }
 
 type sessionResponse struct {
@@ -26,37 +28,65 @@ type sessionResponse struct {
 	Username string `json:"username"`
 }
 
-func (h *SessionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Enable CORS
-	w.Header().Set("Access-Control-Allow-Origin", "*") // For dev; restrict in prod if needed
-	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+type challengeResponse struct {
+	Nonce string `json:"nonce"`
+}
 
+func (h *SessionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		return
 	}
 
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/api/session/challenge":
+		h.handleChallenge(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/api/session":
+		h.handleLogin(w, r)
+	case r.Method == http.MethodDelete && r.URL.Path == "/api/session":
+		h.handleLogout(w, r)
+	default:
+		http.Error(w, "Method not allowed or path not found", http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *SessionHandler) handleChallenge(w http.ResponseWriter, r *http.Request) {
+	nonce, err := h.sessionService.CreateChallenge(r.Context())
+	if err != nil {
+		http.Error(w, "Failed to create challenge", http.StatusInternalServerError)
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(challengeResponse{Nonce: nonce})
+}
 
+func (h *SessionHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req sessionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	if req.Cert == "" {
-		http.Error(w, "Certificate is required", http.StatusBadRequest)
+	if req.Cert == "" || req.Nonce == "" || req.Signature == "" {
+		http.Error(w, "Certificate, Nonce, and Signature are required", http.StatusBadRequest)
 		return
 	}
 
-	token, userID, username, err := h.sessionService.IssueToken(r.Context(), []byte(req.Cert))
+	token, userID, username, err := h.sessionService.IssueToken(r.Context(), []byte(req.Cert), req.Nonce, req.Signature)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
+
+	// Set secure cookie for web client
+	http.SetCookie(w, &http.Cookie{
+		Name:     "x-session-token",
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   86400, // 24h
+	})
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(sessionResponse{
@@ -64,4 +94,17 @@ func (h *SessionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		UserID:   userID,
 		Username: username,
 	})
+}
+
+func (h *SessionHandler) handleLogout(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "x-session-token",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+	w.WriteHeader(http.StatusNoContent)
 }

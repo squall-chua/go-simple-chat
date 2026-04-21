@@ -3,6 +3,7 @@ package ui
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"net"
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -126,8 +127,11 @@ func (m *RootModel) initBasicConnection() error {
 	if err != nil { return err }
 	capool.AppendCertsFromPEM(ca)
 
+	host, _, _ := net.SplitHostPort(m.serverAddr)
 	tlsConfig := &tls.Config{
-		RootCAs: capool,
+		RootCAs:    capool,
+		ServerName: host,
+		MinVersion: tls.VersionTLS13,
 	}
 
 	conn, err := grpc.Dial(m.serverAddr, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)))
@@ -148,9 +152,12 @@ func (m *RootModel) dialAndConnectChat(certPath, keyPath string) (tea.Model, tea
 		return m, func() tea.Msg { return model.MsgError{Err: err} }
 	}
 
+	host, _, _ := net.SplitHostPort(m.serverAddr)
 	tlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{certificate},
 		RootCAs:      capool,
+		ServerName:   host,
+		MinVersion:   tls.VersionTLS13,
 	}
 
 	conn, err := grpc.Dial(m.serverAddr, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)))
