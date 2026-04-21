@@ -3,6 +3,7 @@ import { ref, onUnmounted } from 'vue'
 const socket = ref<WebSocket | null>(null)
 const messageHandlers = ref<((data: any) => void)[]>([])
 const presenceHandlers = ref<((data: any) => void)[]>([])
+const identityHandlers = ref<((data: any) => void)[]>([])
 const errorHandlers = ref<((data: any) => void)[]>([])
 
 export const useStream = () => {
@@ -23,13 +24,16 @@ export const useStream = () => {
     }
   }
 
+  const addIdentityListener = (handler: (data: any) => void) => {
+    identityHandlers.value.push(handler)
+    return () => {
+      identityHandlers.value = identityHandlers.value.filter(h => h !== handler)
+    }
+  }
+
   const connect = () => {
     if (!token.value) return
     
-    // In a real prod environment, we'd use a cookie or query param
-    // For this bridge, we'll try the query param approach if the proxy supports it,
-    // or we assume the browser will send the cookie if we set it in useAuth.
-    // Use configured WebSocket base
     // Use configured WebSocket base and pass token as query param for robustness
     const wsUrl = `${config.public.wsBase}/chat.v1.ChatService/BidiStreamChat?token=${token.value}`
     
@@ -42,6 +46,8 @@ export const useStream = () => {
           messageHandlers.value.forEach(h => h(data.message_received))
         } else if (data.presence_event) {
           presenceHandlers.value.forEach(h => h(data.presence_event))
+        } else if (data.identity_event) {
+          identityHandlers.value.forEach(h => h(data.identity_event))
         } else if (data.error) {
           errorHandlers.value.forEach(h => h(data.error))
         }
@@ -101,6 +107,7 @@ export const useStream = () => {
     disconnect,
     sendMessage,
     addMessageListener,
-    addPresenceListener
+    addPresenceListener,
+    addIdentityListener
   }
 }

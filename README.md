@@ -10,7 +10,8 @@ A high-performance, horizontally-scalable chat service architecture in Go implem
 - **Unified Media Metadata:** Server-side support for diverse media payloads (Image, Video, Audio, Document) with unified storage logic.
 - **Real-Time Read State Sync:** Consistent participant read-state tracking across multiple sessions and devices.
 - **Scalable Pub/Sub Broker:** Topology-agnostic horizontal scalability powered by a Redis-backed message broker.
-- **Cloud-Ready Persistence:** Optimized MongoDB storage with compound indexing and TTL-based authentication challenges.
+- **Persistent Session Store:** Production-grade MongoDB-backed session management with automatic TTL indexing and dual-expiration validation.
+- **Proactive Security Alerts:** Real-time monitoring of identity/session life with automated "Expiring Soon" warnings and immediate connection lockdowns.
 - **Observability:** Built-in Prometheus instrumentation for real-time monitoring of service health and RPC performance.
 
 ## 🚀 Premium TUI Client
@@ -53,6 +54,9 @@ The interface is divided into three main zones:
   - Conversations with new messages are highlighted in **bold green**.
   - Numerical badges (e.g., `[5]`) indicate exactly how many messages you've missed.
   - Clicking/Focusing a channel automatically synchronizes your read-state to the server.
+- **Security Alerts:**
+  - **Amber Warning:** A persistent "SECURITY ALERT" in the status bar notifies you when your certificate expires in under 24 hours.
+  - **Red Lockdown:** Upon expiration, the UI locks and displays a fatal error requiring a restart and identity renewal.
 
 ### 4. Interactive Command Palette
 
@@ -91,6 +95,7 @@ Go Simple Chat implements a robust **Proof-of-Possession (PoP)** mechanism to ma
 2. **Local Signature:** The client signs this nonce using their **Private Key** locally in the browser (via `SubtleCrypto`) or terminal—private keys never leave the client device.
 3. **Verification & Issue:** The server verifies the signature against the nonce using the **Pinned Public Key** stored in the database.
 4. **Renewal/Session:** Upon success, the server either issues a fresh certificate (Renewal) or stores an `HttpOnly` session token (Web Login).
+5. **Real-time Enforcement:** The server monitors the `NotAfter` date of your certificate (and session TTL) in a dedicated background goroutine. If your identity expires during an active session, the server sends an `IdentityEvent` signal and force-terminates the connection to ensure non-repudiation.
 
 ### 4. Web Session Bridge
 

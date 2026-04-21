@@ -59,7 +59,7 @@ func (h *ChatHandler) UploadFile(ctx context.Context, req *chatv1.UploadFileRequ
 	}
 
 	// 1. Authenticate (required for gRPC-Gateway)
-	_, err := h.getUserIDFromContext(ctx)
+	_, _, _, err := h.getUserIDFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +78,7 @@ func (h *ChatHandler) UploadFile(ctx context.Context, req *chatv1.UploadFileRequ
 	}, nil
 }
 
-func (h *ChatHandler) getUserIDFromContext(ctx context.Context) (bson.ObjectID, error) {
+func (h *ChatHandler) getUserIDFromContext(ctx context.Context) (bson.ObjectID, time.Time, time.Time, error) {
 	var clientCert *x509.Certificate
 	var sessionToken string
 
@@ -113,16 +113,15 @@ func (h *ChatHandler) getUserIDFromContext(ctx context.Context) (bson.ObjectID, 
 		}
 	}
 
-	// Case A: Prefer Session Token if present (used by WebSocket Bridge and gRPC-Gateway)
+	// Case A: Prefer Session Token if present
 	if sessionToken != "" && h.sessionService != nil {
-		userID, err := h.sessionService.ValidateToken(ctx, sessionToken)
+		userID, sessionExp, identityExp, err := h.sessionService.ValidateToken(ctx, sessionToken)
 		if err == nil {
 			oid, err := bson.ObjectIDFromHex(userID)
 			if err == nil {
-				return oid, nil
+				return oid, sessionExp, identityExp, nil
 			}
 		}
-		// If token was provided but invalid, we could return error, but let's check cert as fallback
 	}
 
 	// Case B: Fallback to Certificate Identity
@@ -130,25 +129,25 @@ func (h *ChatHandler) getUserIDFromContext(ctx context.Context) (bson.ObjectID, 
 		cn := clientCert.Subject.CommonName
 		oid, err := bson.ObjectIDFromHex(cn)
 		if err != nil {
-			// If it's not a valid OID (e.g. server cert), just fail auth if no session token was valid
-			return bson.NilObjectID, status.Error(codes.Unauthenticated, "authentication required: no valid certificate or session token found")
+			return bson.NilObjectID, time.Time{}, time.Time{}, status.Error(codes.Unauthenticated, "invalid certificate identity")
 		}
 
 		// Verify user exists
-		user, err := h.userService.GetUser(ctx, oid.Hex())
+		user, err := h.userService.GetUserByID(ctx, oid)
 		if err != nil {
-			return bson.NilObjectID, status.Error(codes.Unauthenticated, "user not found or inactive")
+			return bson.NilObjectID, time.Time{}, time.Time{}, status.Error(codes.Unauthenticated, "user not found")
 		}
 
 		// Public key pinning
 		certPubKey, err := x509.MarshalPKIXPublicKey(clientCert.PublicKey)
 		if err == nil && !bytes.Equal(certPubKey, user.PublicKey) {
-			return bson.NilObjectID, status.Error(codes.Unauthenticated, "certificate public key mismatch")
+			return bson.NilObjectID, time.Time{}, time.Time{}, status.Error(codes.Unauthenticated, "certificate public key mismatch")
 		}
-		return oid, nil
+
+		return oid, clientCert.NotAfter, clientCert.NotAfter, nil
 	}
 
-	return bson.NilObjectID, status.Error(codes.Unauthenticated, "authentication required: no valid certificate or session token found")
+	return bson.NilObjectID, time.Time{}, time.Time{}, status.Error(codes.Unauthenticated, "authentication required")
 }
 
 func (h *ChatHandler) isTrustedProxy(addr net.Addr) bool {
@@ -178,7 +177,7 @@ func (h *ChatHandler) HealthCheck(ctx context.Context, req *chatv1.HealthCheckRe
 }
 
 func (h *ChatHandler) CreateChannel(ctx context.Context, req *chatv1.CreateChannelRequest) (*chatv1.CreateChannelResponse, error) {
-	creatorOID, err := h.getUserIDFromContext(ctx)
+	creatorOID, _, _, err := h.getUserIDFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +207,7 @@ func (h *ChatHandler) CreateChannel(ctx context.Context, req *chatv1.CreateChann
 }
 
 func (h *ChatHandler) ListChannels(ctx context.Context, req *chatv1.ListChannelsRequest) (*chatv1.ListChannelsResponse, error) {
-	uOID, err := h.getUserIDFromContext(ctx)
+	uOID, _, _, err := h.getUserIDFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +255,7 @@ func (h *ChatHandler) ListChannels(ctx context.Context, req *chatv1.ListChannels
 }
 
 func (h *ChatHandler) MarkAsRead(ctx context.Context, req *chatv1.MarkAsReadRequest) (*emptypb.Empty, error) {
-	uOID, err := h.getUserIDFromContext(ctx)
+	uOID, _, _, err := h.getUserIDFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +269,7 @@ func (h *ChatHandler) MarkAsRead(ctx context.Context, req *chatv1.MarkAsReadRequ
 }
 
 func (h *ChatHandler) GetMessages(ctx context.Context, req *chatv1.GetMessagesRequest) (*chatv1.GetMessagesResponse, error) {
-	uOID, err := h.getUserIDFromContext(ctx)
+	uOID, _, _, err := h.getUserIDFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -302,7 +301,7 @@ func (h *ChatHandler) GetMessages(ctx context.Context, req *chatv1.GetMessagesRe
 }
 
 func (h *ChatHandler) AddParticipant(ctx context.Context, req *chatv1.AddParticipantRequest) (*chatv1.AddParticipantResponse, error) {
-	uOID, err := h.getUserIDFromContext(ctx)
+	uOID, _, _, err := h.getUserIDFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -363,7 +362,7 @@ func (h *ChatHandler) SendMessage(ctx context.Context, req *chatv1.SendMessageRe
 		return nil, fmt.Errorf("invalid channel id: %w", err)
 	}
 
-	senderOID, err := h.getUserIDFromContext(ctx)
+	senderOID, _, _, err := h.getUserIDFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -402,7 +401,7 @@ func (h *ChatHandler) SendMessage(ctx context.Context, req *chatv1.SendMessageRe
 
 func (h *ChatHandler) BidiStreamChat(stream chatv1.ChatService_BidiStreamChatServer) error {
 	ctx := stream.Context()
-	userID, err := h.getUserIDFromContext(ctx)
+	userID, sessionExp, identityExp, err := h.getUserIDFromContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -420,6 +419,7 @@ func (h *ChatHandler) BidiStreamChat(stream chatv1.ChatService_BidiStreamChatSer
 	// 3. State to protect stream.Send and deduplicate presence
 	var stateMu sync.Mutex
 	lastPresence := make(map[string]bool)
+	forceQuit := make(chan error, 1)
 
 	safeSend := func(res *chatv1.StreamMessageResponse) error {
 		stateMu.Lock()
@@ -437,6 +437,76 @@ func (h *ChatHandler) BidiStreamChat(stream chatv1.ChatService_BidiStreamChatSer
 	}
 
 	// 4b. Personal signal topic for dynamic updates (New channels, etc.)
+	go func() {
+		// 5. Expiration Monitoring
+		// hardExpiry is the absolute first point we must drop.
+		hardExpiry := sessionExp
+		if !identityExp.IsZero() && identityExp.Before(hardExpiry) {
+			hardExpiry = identityExp
+		}
+
+		expiryTimer := time.NewTimer(time.Until(hardExpiry))
+		defer expiryTimer.Stop()
+
+		warnThreshold := 24 * time.Hour
+		warned := false
+
+		// 6. Identity Warning (Certs only)
+		if !identityExp.IsZero() && time.Until(identityExp) < warnThreshold {
+			_ = safeSend(&chatv1.StreamMessageResponse{
+				Payload: &chatv1.StreamMessageResponse_IdentityEvent{
+					IdentityEvent: &chatv1.IdentityEvent{
+						Type:      chatv1.IdentityEvent_TYPE_EXPIRING_SOON,
+						ExpiresAt: timestamppb.New(identityExp),
+					},
+				},
+			})
+			warned = true
+		}
+
+		checkTicker := time.NewTicker(1 * time.Hour)
+		defer checkTicker.Stop()
+		if warned || identityExp.IsZero() {
+			checkTicker.Stop()
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-expiryTimer.C:
+				// Determine if this was a session drop or identity drop
+				eventType := chatv1.IdentityEvent_TYPE_EXPIRED
+				expTime := hardExpiry
+
+				_ = safeSend(&chatv1.StreamMessageResponse{
+					Payload: &chatv1.StreamMessageResponse_IdentityEvent{
+						IdentityEvent: &chatv1.IdentityEvent{
+							Type:      eventType,
+							ExpiresAt: timestamppb.New(expTime),
+						},
+					},
+				})
+				forceQuit <- status.Error(codes.Unauthenticated, "identity expired")
+				return
+			case <-checkTicker.C:
+				if !identityExp.IsZero() && !warned && time.Until(identityExp) < warnThreshold {
+					_ = safeSend(&chatv1.StreamMessageResponse{
+						Payload: &chatv1.StreamMessageResponse_IdentityEvent{
+							IdentityEvent: &chatv1.IdentityEvent{
+								Type:      chatv1.IdentityEvent_TYPE_EXPIRING_SOON,
+								ExpiresAt: timestamppb.New(identityExp),
+							},
+						},
+					})
+					warned = true
+					checkTicker.Stop()
+				}
+			}
+		}
+	}()
+
+	// 4c. Personal signal topic for dynamic updates
 	go func() {
 		_ = h.chatService.SubscribeToSystemSignals(subCtx, userID.Hex(), func(ctx context.Context, sig *model.SystemSignal) error {
 			switch sig.Type {
@@ -516,6 +586,8 @@ func (h *ChatHandler) BidiStreamChat(stream chatv1.ChatService_BidiStreamChatSer
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case err := <-forceQuit:
+		return err
 	case <-timer.C:
 		return status.Error(codes.DeadlineExceeded, "heartbeat timeout")
 	case err := <-recvErr:

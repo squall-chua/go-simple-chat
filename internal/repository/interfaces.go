@@ -41,8 +41,7 @@ type ChallengeRepository interface {
 }
 
 type SessionRepository interface {
-	Store(ctx context.Context, token, userID string, ttl time.Duration) error
-	Get(ctx context.Context, token string) (string, error)
+	Store(ctx context.Context, key, value string, ttl time.Duration, certExpiresAt time.Time) error
+	Get(ctx context.Context, key string) (string, time.Time, time.Time, error)
 	Delete(ctx context.Context, token string) error
 }
-

@@ -42,9 +42,8 @@ func NewSessionService(sessionRepo repository.SessionRepository, userRepo reposi
 
 func (s *SessionService) CreateChallenge(ctx context.Context) (string, error) {
 	nonce := uuid.New().String()
-	// Reuse existing challenge repository logic if possible, or use sessionRepo if it supports TTL blobs
-	// For simplicity, we use a prefixed key in sessionRepo
-	if err := s.sessionRepo.Store(ctx, "challenge:"+nonce, "pending", 5*time.Minute); err != nil {
+	// Pass zero time for certExpiresAt as challenges aren't identities
+	if err := s.sessionRepo.Store(ctx, "challenge:"+nonce, "pending", 5*time.Minute, time.Time{}); err != nil {
 		return "", err
 	}
 	return nonce, nil
@@ -52,7 +51,7 @@ func (s *SessionService) CreateChallenge(ctx context.Context) (string, error) {
 
 func (s *SessionService) IssueToken(ctx context.Context, certPEM []byte, nonce string, signatureHex string) (string, string, string, error) {
 	// 0. Verify Nonce
-	status, err := s.sessionRepo.Get(ctx, "challenge:"+nonce)
+	status, _, _, err := s.sessionRepo.Get(ctx, "challenge:"+nonce)
 	if err != nil || status != "pending" {
 		return "", "", "", errors.New("invalid or expired challenge")
 	}
@@ -133,14 +132,14 @@ func (s *SessionService) IssueToken(ctx context.Context, certPEM []byte, nonce s
 	token := uuid.New().String()
 	ttl := 24 * time.Hour
 
-	// 5. Store session
-	if err := s.sessionRepo.Store(ctx, token, user.ID.Hex(), ttl); err != nil {
+	// 5. Store session with Certificate Expiration
+	if err := s.sessionRepo.Store(ctx, token, user.ID.Hex(), ttl, cert.NotAfter); err != nil {
 		return "", "", "", fmt.Errorf("failed to store session: %w", err)
 	}
 
 	return token, user.ID.Hex(), username, nil
 }
 
-func (s *SessionService) ValidateToken(ctx context.Context, token string) (string, error) {
+func (s *SessionService) ValidateToken(ctx context.Context, token string) (string, time.Time, time.Time, error) {
 	return s.sessionRepo.Get(ctx, token)
 }

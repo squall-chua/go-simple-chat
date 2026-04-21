@@ -235,6 +235,15 @@ func (m ChatScreen) Update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 		case *chatv1.StreamMessageResponse_ParticipantAdded:
 			// Roster changed in one of the channels, reload to get latest metadata
 			cmds = append(cmds, m.loadChannelsCmd())
+		case *chatv1.StreamMessageResponse_IdentityEvent:
+			ie := payload.IdentityEvent
+			switch ie.Type {
+			case chatv1.IdentityEvent_TYPE_EXPIRING_SOON:
+				m.status = fmt.Sprintf("SECURITY ALERT: Certificate expires soon (%s). Please renew.", ie.ExpiresAt.AsTime().Format(time.Kitchen))
+				m.statusErr = true
+			case chatv1.IdentityEvent_TYPE_EXPIRED:
+				m.err = fmt.Errorf("IDENTITY EXPIRED: Connection terminated. Please restart with a renewed certificate.")
+			}
 		case *chatv1.StreamMessageResponse_Error:
 			cmds = append(cmds, func() tea.Msg { return model.MsgError{Err: fmt.Errorf("stream error: %s", payload.Error.Message)} })
 		}
@@ -276,7 +285,7 @@ func (m ChatScreen) Update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 			id := it.(channelListItem).ch.ID
 			if id != m.activeChannelID {
 				m.activeChannelID = id
-				
+
 				// Clear unread on focus
 				if ch, ok := m.channels[id]; ok {
 					ch.LastReadID = ch.LastMessageID
@@ -588,7 +597,7 @@ func (m *ChatScreen) handleIncomingMessage(pm *chatv1.MessageReceived) tea.Cmd {
 		m.viewport.GotoBottom()
 		// Auto-mark as read if we are actively viewing this channel
 		cmds = append(cmds, m.markAsReadCmd(pm.ChannelId, pm.MessageId))
-		
+
 		if ch, ok := m.channels[pm.ChannelId]; ok {
 			ch.LastReadID = pm.MessageId
 			ch.LastMessageID = pm.MessageId

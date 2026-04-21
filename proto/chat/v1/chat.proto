@@ -177,7 +177,18 @@ message StreamMessageResponse {
     ChannelJoined channel_joined = 3;
     ParticipantAdded participant_added = 4;
     ErrorEvent error = 5;
+    IdentityEvent identity_event = 6;
   }
+}
+
+message IdentityEvent {
+  enum Type {
+    TYPE_UNSPECIFIED = 0;
+    TYPE_EXPIRING_SOON = 1;
+    TYPE_EXPIRED = 2;
+  }
+  Type type = 1;
+  google.protobuf.Timestamp expires_at = 2;
 }
 
 message ParticipantAdded {

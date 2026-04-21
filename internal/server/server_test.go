@@ -5,8 +5,10 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -79,6 +81,27 @@ func (m *mockChallengeRepo) GetAndDelete(ctx context.Context, userID string) (st
 	return "", nil
 }
 
+type mockSessionRepo struct {
+	repository.SessionRepository
+	sessions sync.Map
+}
+
+func (m *mockSessionRepo) Store(ctx context.Context, key, value string, ttl time.Duration, certExpiresAt time.Time) error {
+	m.sessions.Store(key, value)
+	return nil
+}
+func (m *mockSessionRepo) Get(ctx context.Context, key string) (string, time.Time, time.Time, error) {
+	v, ok := m.sessions.Load(key)
+	if !ok {
+		return "", time.Time{}, time.Time{}, errors.New("not found")
+	}
+	return v.(string), time.Now().Add(time.Hour), time.Now().Add(time.Hour), nil
+}
+func (m *mockSessionRepo) Delete(ctx context.Context, key string) error {
+	m.sessions.Delete(key)
+	return nil
+}
+
 func TestServerIntegration(t *testing.T) {
 	// 1. Setup Infra
 	conf := &config.Config{Port: "18081", CertDir: t.TempDir()}
@@ -98,7 +121,7 @@ func TestServerIntegration(t *testing.T) {
 	// Setup gRPC Server
 	grpcServer := grpc.NewServer()
 	
-	sessionRepo := repository.NewMemorySessionRepository()
+	sessionRepo := &mockSessionRepo{}
 	sessionService, _ := service.NewSessionService(sessionRepo, uRepo, ca.GetCACert())
 	
 	chatv1.RegisterChatServiceServer(grpcServer, chatgrpc.NewChatHandler(userService, chatService, presenceSvc, sessionService, nil, []string{"127.0.0.1"}))

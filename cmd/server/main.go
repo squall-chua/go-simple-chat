@@ -10,7 +10,6 @@ import (
 	"go-simple-chat/internal/broker"
 	"go-simple-chat/internal/config"
 	"go-simple-chat/internal/crypto"
-	"go-simple-chat/internal/repository"
 	"go-simple-chat/internal/repository/mongo"
 	"go-simple-chat/internal/server"
 	"go-simple-chat/internal/service"
@@ -44,7 +43,7 @@ func main() {
 	msgRepo, _ := mongo.NewMessageRepo(ctx, store.DB)
 	readStateRepo, _ := mongo.NewReadStateRepo(ctx, store.DB)
 	challengeRepo, _ := mongo.NewChallengeRepo(ctx, store.DB)
-	sessionRepo := repository.NewMemorySessionRepository()
+	sessionRepo, _ := mongo.NewSessionRepo(ctx, store.DB)
 
 	// 2. Broker
 	var b broker.Broker
