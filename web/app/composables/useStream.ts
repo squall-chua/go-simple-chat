@@ -7,7 +7,7 @@ const identityHandlers = ref<((data: any) => void)[]>([])
 const errorHandlers = ref<((data: any) => void)[]>([])
 
 export const useStream = () => {
-  const { token } = useAuth()
+  const { token, restoreSession } = useAuth()
   const config = useRuntimeConfig()
 
   const addMessageListener = (handler: (data: any) => void) => {
@@ -34,8 +34,8 @@ export const useStream = () => {
   const connect = () => {
     if (!token.value) return
     
-    // Use configured WebSocket base and pass token as query param for robustness
-    const wsUrl = `${config.public.wsBase}/chat.v1.ChatService/BidiStreamChat?token=${token.value}`
+    // Use configured WebSocket base. Token is now passed automatically via HTTP-only cookie.
+    const wsUrl = `${config.public.wsBase}/chat.v1.ChatService/BidiStreamChat`
     
     socket.value = new WebSocket(wsUrl)
 
@@ -61,9 +61,13 @@ export const useStream = () => {
       errorHandlers.value.forEach(h => h(err))
     }
 
-    socket.value.onclose = () => {
-      console.log('WebSocket closed, reconnecting in 5s...')
+    socket.value.onclose = async () => {
+      console.log('WebSocket closed, attempting background re-auth and reconnect in 5s...')
       stopHeartbeat()
+      
+      // Attempt silent re-authentication in background
+      await restoreSession()
+      
       setTimeout(connect, 5000)
     }
 

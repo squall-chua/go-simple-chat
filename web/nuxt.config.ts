@@ -3,7 +3,7 @@ export default defineNuxtConfig({
   compatibilityDate: '2024-11-01',
   devtools: { enabled: true },
   srcDir: 'app',
-  modules: ['@unocss/nuxt'],
+  modules: ['@unocss/nuxt', '@nuxt/icon'],
   app: {
     head: {
       title: 'Secure messaging',

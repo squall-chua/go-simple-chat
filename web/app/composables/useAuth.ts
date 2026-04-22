@@ -20,10 +20,12 @@ export const useAuth = () => {
   const { loadIdentity, saveIdentity, clearIdentity } = useIndexedDB()
   const { showError } = useToast()
 
-  const login = async (cert: string, key: string) => {
+  const login = async (cert: string, key: string, silent = false) => {
     try {
       // 1. Get Challenge
-      const challengeResponse = await fetch(`${config.public.apiBase}/api/session/challenge`)
+      const challengeResponse = await fetch(`${config.public.apiBase}/api/session/challenge`, {
+        credentials: 'include'
+      })
       if (!challengeResponse.ok) {
         throw new Error('Failed to get login challenge')
       }
@@ -36,7 +38,8 @@ export const useAuth = () => {
       const response = await fetch(`${config.public.apiBase}/api/session`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cert, nonce, signature })
+        body: JSON.stringify({ cert, nonce, signature }),
+        credentials: 'include'
       })
 
       if (!response.ok) {
@@ -56,7 +59,9 @@ export const useAuth = () => {
 
       return true
     } catch (err: any) {
-      showError(err.message)
+      if (!silent) {
+        showError(err.message)
+      }
       return false
     }
   }
@@ -64,7 +69,10 @@ export const useAuth = () => {
   const logout = async () => {
     // Call server to clear cookie
     try {
-      await fetch(`${config.public.apiBase}/api/session`, { method: 'DELETE' })
+      await fetch(`${config.public.apiBase}/api/session`, { 
+        method: 'DELETE',
+        credentials: 'include'
+      })
     } catch (e) {
       console.warn('Silent logout failure', e)
     }
@@ -80,7 +88,7 @@ export const useAuth = () => {
   const restoreSession = async () => {
     const identity = await loadIdentity()
     if (identity) {
-      return await login(identity.cert, identity.key)
+      return await login(identity.cert, identity.key, true)
     }
     return false
   }
