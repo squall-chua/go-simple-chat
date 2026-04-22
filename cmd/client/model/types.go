@@ -65,9 +65,14 @@ type MsgStreamEvent struct {
 	Response *chatv1.StreamMessageResponse
 }
 
-// MsgPresenceLoaded is sent when presence info for a user is fetched.
+// MsgPresenceUpdate is sent when presence info for a user is updated.
 type MsgPresenceUpdate struct {
 	Event *chatv1.PresenceEvent
+}
+
+// MsgBulkPresenceUpdate is sent when multiple users' presence info is updated at once.
+type MsgBulkPresenceUpdate struct {
+	Events []*chatv1.PresenceEvent
 }
 
 type MsgStreamStarted struct {

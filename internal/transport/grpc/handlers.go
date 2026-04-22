@@ -659,26 +659,53 @@ func (h *ChatHandler) subscribeToChannel(subCtx context.Context, channelID, self
 }
 
 func (h *ChatHandler) GetPresence(ctx context.Context, req *chatv1.GetPresenceRequest) (*chatv1.GetPresenceResponse, error) {
-	id := req.UserId
-	if id == "" && req.Username != "" {
-		user, err := h.userService.GetUserByUsername(ctx, req.Username)
-		if err != nil {
-			return nil, status.Error(codes.NotFound, "user not found")
+	// 1. Resolve all unique user IDs
+	uniqueIDs := make(map[string]struct{})
+	for _, id := range req.UserIds {
+		if id != "" {
+			uniqueIDs[id] = struct{}{}
 		}
-		id = user.ID.Hex()
 	}
 
-	if id == "" {
-		return nil, status.Error(codes.InvalidArgument, "user_id or username is required")
+	for _, uname := range req.Usernames {
+		if uname == "" {
+			continue
+		}
+		user, err := h.userService.GetUserByUsername(ctx, uname)
+		if err == nil {
+			uniqueIDs[user.ID.Hex()] = struct{}{}
+		}
 	}
 
-	online, lastSeen, err := h.presenceService.GetPresence(ctx, id)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to get presence: %v", err)
+	if len(uniqueIDs) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "at least one user_id or username is required")
+	}
+
+	// 2. Fetch presence for each resolved ID
+	var results []*chatv1.UserPresence
+	for id := range uniqueIDs {
+		online, lastSeen, err := h.presenceService.GetPresence(ctx, id)
+		if err != nil {
+			continue // Skip errors for individual users
+		}
+
+		// Hydrate username for the response if possible
+		username := ""
+		oid, _ := bson.ObjectIDFromHex(id)
+		user, err := h.userService.GetUserByID(ctx, oid)
+		if err == nil {
+			username = user.Username
+		}
+
+		results = append(results, &chatv1.UserPresence{
+			UserId:   id,
+			Username: username,
+			Online:   online,
+			LastSeen: timestamppb.New(lastSeen),
+		})
 	}
 
 	return &chatv1.GetPresenceResponse{
-		Online:   online,
-		LastSeen: timestamppb.New(lastSeen),
+		Presences: results,
 	}, nil
 }

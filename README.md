@@ -102,8 +102,9 @@ Go Simple Chat implements a robust **Proof-of-Possession (PoP)** mechanism to ma
 The web client securely bridges standard browser environments with the mTLS-strict backend via the **Public Gateway (Port 8081)**:
 
 1. **Replay Protection:** The client performs a cryptographic challenge-response handshake (`POST /api/session`) to prove possession of the private key, preventing attackers from replaying captured public certificates.
-2. **Token Issuance:** The server verifies the PoP and issued a short-lived, `HttpOnly`, `Secure` **Session Token**.
-3. **Authorization:** Subsequent API and WebSocket requests are authenticated via the `x-session-token` header. The gateway validates the token and proxies the request to the internal mTLS core (Port 8080) using a loopback-trusted identity bridge.
+2. **Secure Token Issuance:** The server verifies the PoP and issues a short-lived, **`HttpOnly`**, **`Secure`** session cookie (`x-session-token`). This protects the token from Cross-Site Scripting (XSS) attacks by preventing JavaScript access.
+3. **Authorization:** Subsequent API and WebSocket requests are authenticated via this secure cookie. The gateway validates the token and proxies the request to the internal mTLS core (Port 8080) using a loopback-trusted identity bridge.
+4. **Seamless Re-authentication:** Both the Web and TUI clients implement background re-authentication. If a session token expires while the certificate is still valid, the client silently performs a new PoP handshake to obtain a fresh session without interrupting the user's workflow.
 
 ## ⚙️ Configuration
 
@@ -174,7 +175,8 @@ npm run dev
 
 - **Hexagonal Modular Monolith:** Core logic decoupled from transport and storage.
 - **Trusted Bridge Model:** The public gateway validates web sessions and proxies them to the internal gRPC core using service-level certificates.
-- **WebSocket Gateway:** Real-time streams are authenticated via session tokens passed as query parameters for cross-origin compatibility.
+- **WebSocket Gateway:** Real-time streams are authenticated via the same secure `HttpOnly` session cookies as the REST API, eliminating sensitive tokens from URLs.
+- **Bulk Presence Tracking:** The `GetPresence` API supports batch lookups, allowing clients to synchronize the online status of dozens of participants in a single efficient network call.
 - **Public Key Pinning:** Prevents impersonation by verifying the certificate's public key against the user's permanent database record.
 
 ## Monitoring

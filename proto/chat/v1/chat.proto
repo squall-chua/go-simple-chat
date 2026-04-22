@@ -94,7 +94,7 @@ service ChatService {
   // Presence
   rpc GetPresence(GetPresenceRequest) returns (GetPresenceResponse) {
     option (google.api.http) = {
-      get: "/v1/users/{user_id}/presence"
+      get: "/v1/presence"
     };
   }
 }
@@ -227,13 +227,19 @@ message ChannelJoined {
 }
 
 message GetPresenceRequest {
+  repeated string user_ids = 1;
+  repeated string usernames = 2;
+}
+
+message UserPresence {
   string user_id = 1;
   string username = 2;
+  bool online = 3;
+  google.protobuf.Timestamp last_seen = 4;
 }
 
 message GetPresenceResponse {
-  bool online = 1;
-  google.protobuf.Timestamp last_seen = 2;
+  repeated UserPresence presences = 1;
 }
 
 message CreateChannelRequest {

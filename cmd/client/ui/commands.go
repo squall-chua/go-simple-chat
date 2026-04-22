@@ -109,18 +109,24 @@ func (m ChatScreen) addParticipantsCmd(channelID string, usernames []string) tea
 
 func (m ChatScreen) checkPresenceCmd(username string) tea.Cmd {
 	return func() tea.Msg {
-		res, err := m.client.GetPresence(context.Background(), &chatv1.GetPresenceRequest{Username: username})
+		res, err := m.client.GetPresence(context.Background(), &chatv1.GetPresenceRequest{
+			Usernames: []string{username},
+		})
 		if err != nil {
 			return model.MsgError{Err: err}
 		}
+		if len(res.Presences) == 0 {
+			return model.MsgError{Err: fmt.Errorf("User %s not found or presence unavailable", username)}
+		}
+		p := res.Presences[0]
 		lastSeen := "never"
-		if res.LastSeen != nil {
-			lastSeen = res.LastSeen.AsTime().Format("2006-01-02 15:04:05")
+		if p.LastSeen != nil {
+			lastSeen = p.LastSeen.AsTime().Format("2006-01-02 15:04:05")
 		}
 		status := "Offline"
-		if res.Online {
+		if p.Online {
 			status = "Online"
 		}
-		return model.MsgError{Err: fmt.Errorf("User %s: %s (Last seen: %s)", username, status, lastSeen)}
+		return model.MsgError{Err: fmt.Errorf("User %s: %s (Last seen: %s)", p.Username, status, lastSeen)}
 	}
 }

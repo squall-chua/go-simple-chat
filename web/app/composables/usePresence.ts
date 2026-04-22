@@ -25,20 +25,30 @@ export const usePresence = () => {
   const fetchPresence = async (userIds: string[]) => {
     if (!token.value || userIds.length === 0) return
     
-    for (const id of userIds) {
-      if (!id || id === userId.value) continue
-      try {
-        const response = await fetch(`${config.public.apiBase}/v1/users/${id}/presence`, {
-          headers: { 'x-session-token': token.value || '' }
-        })
-        if (response.ok) {
-          const data = await response.json()
-          if (data.online) onlineUsers.value.add(id)
-          else onlineUsers.value.delete(id)
+    // Filter out empty IDs and self
+    const targetIds = userIds.filter(id => id && id !== userId.value)
+    if (targetIds.length === 0) return
+
+    try {
+      // Build query string for repeated user_ids
+      const params = new URLSearchParams()
+      targetIds.forEach(id => params.append('user_ids', id))
+
+      const response = await fetch(`${config.public.apiBase}/v1/presence?${params.toString()}`, {
+        credentials: 'include'
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        if (data.presences && Array.isArray(data.presences)) {
+          data.presences.forEach((p: { user_id: string, online: boolean }) => {
+            if (p.online) onlineUsers.value.add(p.user_id)
+            else onlineUsers.value.delete(p.user_id)
+          })
         }
-      } catch (err) {
-        console.error('Failed to fetch presence for', id, err)
       }
+    } catch (err) {
+      console.error('Failed to fetch bulk presence:', err)
     }
   }
 

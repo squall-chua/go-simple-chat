@@ -165,9 +165,9 @@ func (m ChatScreen) Update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 			}
 		}
 
-		// Check presence for all known participants
-		for _, id := range pIDs {
-			cmds = append(cmds, m.getPresenceCmd(id))
+		// Check presence for all known participants in one bulk request
+		if len(pIDs) > 0 {
+			cmds = append(cmds, m.getPresenceCmd(pIDs))
 		}
 
 		items := make([]list.Item, len(msg.Channels))
@@ -212,7 +212,17 @@ func (m ChatScreen) Update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 			Online: pe.Online,
 		}
 		m.refreshParticipantList()
-		return m, m.recvStreamCmd()
+		return m, nil
+
+	case model.MsgBulkPresenceUpdate:
+		for _, pe := range msg.Events {
+			m.presenceMap[pe.UserId] = model.PresenceInfo{
+				UserID: pe.UserId,
+				Online: pe.Online,
+			}
+		}
+		m.refreshParticipantList()
+		return m, nil
 
 	case model.MsgStreamEvent:
 		res := msg.Response
@@ -548,20 +558,24 @@ func (m ChatScreen) heartbeatCmd() tea.Cmd {
 	})
 }
 
-func (m ChatScreen) getPresenceCmd(userID string) tea.Cmd {
+
+func (m ChatScreen) getPresenceCmd(userIDs []string) tea.Cmd {
 	return func() tea.Msg {
 		res, err := m.client.GetPresence(context.Background(), &chatv1.GetPresenceRequest{
-			UserId: userID,
+			UserIds: userIDs,
 		})
-		if err != nil {
+		if err != nil || len(res.Presences) == 0 {
 			return nil // Silent fail for presence
 		}
-		return model.MsgPresenceUpdate{
-			Event: &chatv1.PresenceEvent{
-				UserId: userID,
-				Online: res.Online,
-			},
+		
+		var events []*chatv1.PresenceEvent
+		for _, p := range res.Presences {
+			events = append(events, &chatv1.PresenceEvent{
+				UserId: p.UserId,
+				Online: p.Online,
+			})
 		}
+		return model.MsgBulkPresenceUpdate{Events: events}
 	}
 }
 
