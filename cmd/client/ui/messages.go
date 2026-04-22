@@ -102,7 +102,7 @@ func FormatMessage(msg model.Message, selfID string, width int) string {
 }
 
 // RefreshViewport updates the viewport model with formatted messages with semi-virtualization.
-func RefreshViewport(vp *viewport.Model, messages []model.Message, selfID string, width int) {
+func RefreshViewport(vp *viewport.Model, messages []model.Message, selfID string, width int, markerID string) {
 	if len(messages) == 0 {
 		vp.SetContent("No messages yet...")
 		return
@@ -116,9 +116,27 @@ func RefreshViewport(vp *viewport.Model, messages []model.Message, selfID string
 	}
 
 	var b strings.Builder
+	
+	if markerID == "MARKER_TOP" {
+		b.WriteString(renderMarker(width) + "\n\n")
+	}
+
 	for i := start; i < len(messages); i++ {
 		b.WriteString(FormatMessage(messages[i], selfID, width) + "\n")
+		if messages[i].ID == markerID && markerID != "" && markerID != "MARKER_TOP" {
+			b.WriteString("\n" + renderMarker(width) + "\n\n")
+		}
 	}
 
 	vp.SetContent(b.String())
+}
+
+func renderMarker(width int) string {
+	const label = " New Messages "
+	sideLen := (width - len(label)) / 2
+	if sideLen < 0 {
+		sideLen = 0
+	}
+	line := strings.Repeat("─", sideLen)
+	return model.StyleNewMessagesMarker.Render(line + label + line)
 }

@@ -45,6 +45,7 @@ type ChatScreen struct {
 
 	isHistoryLoading bool
 	historyExhausted map[string]bool
+	newMessagesMarkerID string // ID of the message after which to show "New Messages" marker
 }
 
 func NewChatScreen(client chatv1.ChatServiceClient, userID string) ChatScreen {
@@ -137,6 +138,7 @@ func (m ChatScreen) Update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 						cmd = HandleCommand(m, content)
 					} else if m.activeChannelID != "" {
 						cmd = m.sendMessageCmd(content)
+						m.newMessagesMarkerID = "" // Clear marker on interaction
 					}
 					cmds = append(cmds, cmd)
 					m.textarea.Reset()
@@ -298,6 +300,16 @@ func (m ChatScreen) Update(msg tea.Msg) (ChatScreen, tea.Cmd) {
 
 				// Clear unread on focus
 				if ch, ok := m.channels[id]; ok {
+					// Set marker if there are unread messages
+					if ch.UnreadCount > 0 {
+						m.newMessagesMarkerID = ch.LastReadID
+						if m.newMessagesMarkerID == "" {
+							m.newMessagesMarkerID = "MARKER_TOP"
+						}
+					} else {
+						m.newMessagesMarkerID = ""
+					}
+
 					ch.LastReadID = ch.LastMessageID
 					ch.UnreadCount = 0
 					m.channels[id] = ch
@@ -673,7 +685,7 @@ func (m ChatScreen) sendMessageCmd(content string) tea.Cmd {
 }
 
 func (m *ChatScreen) refreshViewportContents() {
-	RefreshViewport(&m.viewport, m.messages[m.activeChannelID], m.userID, m.viewport.Width)
+	RefreshViewport(&m.viewport, m.messages[m.activeChannelID], m.userID, m.viewport.Width, m.newMessagesMarkerID)
 	m.viewport.GotoBottom()
 }
 

@@ -82,6 +82,11 @@ var (
 	
 	StyleBold = lipgloss.NewStyle().Bold(true)
 
+	StyleNewMessagesMarker = lipgloss.NewStyle().
+			Foreground(ColorError).
+			Bold(true).
+			Padding(0, 1)
+
 	// Misc
 	Divider = lipgloss.NewStyle().
 		SetString("•").
