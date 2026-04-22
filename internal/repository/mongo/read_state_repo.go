@@ -9,7 +9,6 @@ import (
 	"github.com/squall-chua/gmqb"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 type ReadStateRepo struct {
@@ -20,40 +19,34 @@ func NewReadStateRepo(ctx context.Context, db *mongo.Database) (*ReadStateRepo, 
 	col := db.Collection("read_states")
 	f := gmqb.Field[model.ReadState]
 
+	wrapped := gmqb.Wrap[model.ReadState](col)
+
 	// Index: user_id + channel_id unique
-	_, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys: bson.D{
-			{Key: f("UserID"), Value: 1},
-			{Key: f("ChannelID"), Value: 1},
-		},
-		Options: options.Index().SetUnique(true),
-	})
+	_, err := wrapped.CreateIndex(ctx, gmqb.NewIndex(gmqb.SortSpec(
+		gmqb.SortRule(f("UserID"), 1),
+		gmqb.SortRule(f("ChannelID"), 1),
+	)).Unique())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create read_state indexes: %w", err)
 	}
 
-	return &ReadStateRepo{col: gmqb.Wrap[model.ReadState](col)}, nil
+	return &ReadStateRepo{col: wrapped}, nil
 }
 
 func (r *ReadStateRepo) Upsert(ctx context.Context, userID, channelID, lastRead bson.ObjectID) (bool, error) {
 	f := gmqb.Field[model.ReadState]
 	now := time.Now()
 
-	// Use literal bson.M for filter to ensure MongoDB can extract fields for upsert
-	filter := bson.M{
-		f("UserID"):    userID,
-		f("ChannelID"): channelID,
-	}
+	filter := gmqb.And(
+		gmqb.Eq(f("UserID"), userID),
+		gmqb.Eq(f("ChannelID"), channelID),
+	)
 
-	// Use standard $max and $set
-	// Note: We don't necessarily need $setOnInsert if these fields are in the filter
-	update := bson.M{
-		"$max": bson.M{f("LastRead"): lastRead},
-		"$set": bson.M{f("UpdatedAt"): now},
-	}
+	update := gmqb.NewUpdate().
+		Max(f("LastRead"), lastRead).
+		Set(f("UpdatedAt"), now)
 
-	opts := options.UpdateOne().SetUpsert(true)
-	res, err := r.col.Unwrap().UpdateOne(ctx, filter, update, opts)
+	res, err := r.col.UpdateOne(ctx, filter, update, gmqb.WithUpsert(true))
 	if err != nil {
 		return false, fmt.Errorf("failed to upsert read state: %w", err)
 	}

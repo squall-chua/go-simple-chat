@@ -18,15 +18,15 @@ func NewChannelRepo(ctx context.Context, db *mongo.Database) (*ChannelRepo, erro
 	col := db.Collection("channels")
 	f := gmqb.Field[model.Channel]
 
+	wrapped := gmqb.Wrap[model.Channel](col)
+
 	// Create index for participants lookup
-	_, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys: bson.D{{Key: f("Participants"), Value: 1}},
-	})
+	_, err := wrapped.CreateIndex(ctx, gmqb.NewIndex(gmqb.SortSpec(gmqb.SortRule(f("Participants"), 1))))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create channel indexes: %w", err)
 	}
 
-	return &ChannelRepo{col: gmqb.Wrap[model.Channel](col)}, nil
+	return &ChannelRepo{col: wrapped}, nil
 }
 
 func (r *ChannelRepo) Create(ctx context.Context, channel *model.Channel) error {
@@ -66,20 +66,23 @@ func (r *ChannelRepo) GetDirectChannel(ctx context.Context, user1, user2 bson.Ob
 
 func (r *ChannelRepo) AddParticipants(ctx context.Context, channelID bson.ObjectID, userIDs []bson.ObjectID) error {
 	f := gmqb.Field[model.Channel]
-	filter := bson.M{f("ID"): channelID}
-	update := bson.M{
-		"$addToSet": bson.M{f("Participants"): bson.M{"$each": userIDs}},
+	ifaces := make([]interface{}, len(userIDs))
+	for i, id := range userIDs {
+		ifaces[i] = id
 	}
-	_, err := r.col.Unwrap().UpdateOne(ctx, filter, update)
+
+	_, err := r.col.UpdateOne(ctx,
+		gmqb.Eq(f("ID"), channelID),
+		gmqb.NewUpdate().AddToSetEach(f("Participants"), ifaces...),
+	)
 	return err
 }
 
 func (r *ChannelRepo) UpdateLastMessageID(ctx context.Context, channelID bson.ObjectID, messageID bson.ObjectID) error {
 	f := gmqb.Field[model.Channel]
-	filter := bson.M{f("ID"): channelID}
-	update := bson.M{
-		"$set": bson.M{f("LastMessageID"): messageID},
-	}
-	_, err := r.col.Unwrap().UpdateOne(ctx, filter, update)
+	_, err := r.col.UpdateOne(ctx,
+		gmqb.Eq(f("ID"), channelID),
+		gmqb.NewUpdate().Set(f("LastMessageID"), messageID),
+	)
 	return err
 }

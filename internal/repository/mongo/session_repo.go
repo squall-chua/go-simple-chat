@@ -8,9 +8,7 @@ import (
 
 	"go-simple-chat/internal/repository"
 	"github.com/squall-chua/gmqb"
-	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 type sessionDoc struct {
@@ -26,17 +24,15 @@ type SessionRepo struct {
 
 func NewSessionRepo(ctx context.Context, db *mongo.Database) (repository.SessionRepository, error) {
 	col := db.Collection("sessions")
+	wrapped := gmqb.Wrap[sessionDoc](col)
 
 	// 1. Create TTL index on ExpiresAt
-	_, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys:    bson.D{{Key: "expires_at", Value: 1}},
-		Options: options.Index().SetExpireAfterSeconds(0),
-	})
+	_, err := wrapped.CreateIndex(ctx, gmqb.NewIndex(gmqb.SortSpec(gmqb.SortRule("expires_at", 1))).TTL(0))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session indexes: %w", err)
 	}
 
-	return &SessionRepo{col: gmqb.Wrap[sessionDoc](col)}, nil
+	return &SessionRepo{col: wrapped}, nil
 }
 
 func (r *SessionRepo) Store(ctx context.Context, token, userID string, ttl time.Duration, certExpiresAt time.Time) error {
@@ -47,8 +43,7 @@ func (r *SessionRepo) Store(ctx context.Context, token, userID string, ttl time.
 		CertExpiresAt: certExpiresAt,
 	}
 
-	opts := options.Replace().SetUpsert(true)
-	_, err := r.col.Unwrap().ReplaceOne(ctx, bson.M{"_id": token}, doc, opts)
+	_, err := r.col.ReplaceOne(ctx, gmqb.Eq("_id", token), &doc, gmqb.WithUpsertReplace(true))
 	return err
 }
 

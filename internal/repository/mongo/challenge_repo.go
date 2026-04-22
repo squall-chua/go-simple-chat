@@ -2,14 +2,13 @@ package mongo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"go-simple-chat/internal/model"
 	"github.com/squall-chua/gmqb"
-	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 type ChallengeRepo struct {
@@ -20,18 +19,15 @@ func NewChallengeRepo(ctx context.Context, db *mongo.Database) (*ChallengeRepo, 
 	col := db.Collection("challenges")
 	f := gmqb.Field[model.AuthChallenge]
 
+	wrapped := gmqb.Wrap[model.AuthChallenge](col)
+
 	// Create TTL index on CreatedAt
-	// Note: We use 0 as the expireAfterSeconds and calculate the expiration in the document insertion
-	// or we can set a fixed TTL here. Let's set a fixed TTL of 5 minutes as a fallback.
-	_, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys:    bson.D{{Key: f("CreatedAt"), Value: 1}},
-		Options: options.Index().SetExpireAfterSeconds(300), // 5 minutes
-	})
+	_, err := wrapped.CreateIndex(ctx, gmqb.NewIndex(gmqb.SortSpec(gmqb.SortRule(f("CreatedAt"), 1))).TTL(300))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create challenge indexes: %w", err)
 	}
 
-	return &ChallengeRepo{col: gmqb.Wrap[model.AuthChallenge](col)}, nil
+	return &ChallengeRepo{col: wrapped}, nil
 }
 
 func (r *ChallengeRepo) Store(ctx context.Context, userID, nonce string, ttl time.Duration) error {
@@ -41,22 +37,16 @@ func (r *ChallengeRepo) Store(ctx context.Context, userID, nonce string, ttl tim
 		CreatedAt: time.Now(),
 	}
 
-	opts := options.Replace().SetUpsert(true)
-	_, err := r.col.Unwrap().ReplaceOne(ctx, bson.M{"_id": userID}, challenge, opts)
+	_, err := r.col.ReplaceOne(ctx, gmqb.Eq("_id", userID), challenge, gmqb.WithUpsertReplace(true))
 	return err
 }
 
 func (r *ChallengeRepo) GetAndDelete(ctx context.Context, userID string) (string, error) {
-	res := r.col.Unwrap().FindOneAndDelete(ctx, bson.M{"_id": userID})
-	if res.Err() != nil {
-		if res.Err() == mongo.ErrNoDocuments {
+	challenge, err := r.col.FindOneAndDelete(ctx, gmqb.Eq("_id", userID))
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
 			return "", nil
 		}
-		return "", res.Err()
-	}
-
-	var challenge model.AuthChallenge
-	if err := res.Decode(&challenge); err != nil {
 		return "", err
 	}
 

@@ -9,7 +9,6 @@ import (
 	"github.com/squall-chua/gmqb"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 type UserRepo struct {
@@ -20,16 +19,15 @@ func NewUserRepo(ctx context.Context, db *mongo.Database) (*UserRepo, error) {
 	col := db.Collection("users")
 	f := gmqb.Field[model.User]
 
+	wrapped := gmqb.Wrap[model.User](col)
+
 	// Create indices
-	_, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys:    bson.D{{Key: f("Username"), Value: 1}},
-		Options: options.Index().SetUnique(true),
-	})
+	_, err := wrapped.CreateIndex(ctx, gmqb.NewIndex(gmqb.SortSpec(gmqb.SortRule(f("Username"), 1))).Unique())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create user indexes: %w", err)
 	}
 
-	return &UserRepo{col: gmqb.Wrap[model.User](col)}, nil
+	return &UserRepo{col: wrapped}, nil
 }
 
 func (r *UserRepo) Create(ctx context.Context, user *model.User) error {
@@ -52,9 +50,11 @@ func (r *UserRepo) GetByUsername(ctx context.Context, username string) (*model.U
 
 func (r *UserRepo) UpdateLastSeen(ctx context.Context, id bson.ObjectID, lastSeen time.Time) error {
 	f := gmqb.Field[model.User]
-	_, err := r.col.Unwrap().UpdateOne(ctx, gmqb.Eq(f("ID"), id), bson.M{"$set": bson.M{
-		f("LastSeen"):  lastSeen,
-		f("UpdatedAt"): time.Now(),
-	}})
+	_, err := r.col.UpdateOne(ctx,
+		gmqb.Eq(f("ID"), id),
+		gmqb.NewUpdate().
+			Set(f("LastSeen"), lastSeen).
+			Set(f("UpdatedAt"), time.Now()),
+	)
 	return err
 }

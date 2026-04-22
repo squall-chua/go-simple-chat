@@ -18,18 +18,18 @@ func NewMessageRepo(ctx context.Context, db *mongo.Database) (*MessageRepo, erro
 	col := db.Collection("messages")
 	f := gmqb.Field[model.Message]
 
+	wrapped := gmqb.Wrap[model.Message](col)
+
 	// Create compound index for channel ordering
-	_, err := col.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys: bson.D{
-			{Key: f("ChannelID"), Value: 1},
-			{Key: f("CreatedAt"), Value: -1},
-		},
-	})
+	_, err := wrapped.CreateIndex(ctx, gmqb.NewIndex(gmqb.SortSpec(
+		gmqb.SortRule(f("ChannelID"), 1),
+		gmqb.SortRule(f("CreatedAt"), -1),
+	)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create message indexes: %w", err)
 	}
 
-	return &MessageRepo{col: gmqb.Wrap[model.Message](col)}, nil
+	return &MessageRepo{col: wrapped}, nil
 }
 
 func (r *MessageRepo) Create(ctx context.Context, msg *model.Message) error {
@@ -65,11 +65,9 @@ func (r *MessageRepo) GetByChannel(ctx context.Context, channelID bson.ObjectID,
 
 func (r *MessageRepo) CountAfter(ctx context.Context, channelID bson.ObjectID, afterID bson.ObjectID) (int64, error) {
 	f := gmqb.Field[model.Message]
-	filter := bson.M{
-		f("ChannelID"): channelID,
-	}
+	filter := gmqb.Eq(f("ChannelID"), channelID)
 	if !afterID.IsZero() {
-		filter[f("ID")] = bson.M{"$gt": afterID}
+		filter = gmqb.And(filter, gmqb.Gt(f("ID"), afterID))
 	}
-	return r.col.Unwrap().CountDocuments(ctx, filter)
+	return r.col.CountDocuments(ctx, filter)
 }
