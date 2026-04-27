@@ -47,9 +47,26 @@ func main() {
 
 	// 2. Broker
 	var b broker.Broker
-	if cfg.BrokerType == "redis" {
+	switch cfg.BrokerType {
+	case "redis":
 		b = broker.NewRedisBroker(cfg.RedisAddr, logger)
-	} else {
+	case "mongodb":
+		pubSubURI := cfg.PubSubMongoURI
+		if pubSubURI == "" {
+			pubSubURI = cfg.MongoURI
+		}
+		psStore, err := mongo.NewStore(ctx, pubSubURI)
+		if err != nil {
+			logger.Fatal("failed to init mongo pubsub", zap.Error(err))
+		}
+		// Keep connection open for broker lifetime
+		defer psStore.Close(context.Background())
+
+		b, err = broker.NewMongoBroker(psStore.DB, logger)
+		if err != nil {
+			logger.Fatal("failed to init mongo broker", zap.Error(err))
+		}
+	default:
 		b = broker.NewLocalBroker(logger)
 	}
 	defer b.Close()

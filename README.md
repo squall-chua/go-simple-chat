@@ -9,7 +9,7 @@ A high-performance, horizontally-scalable chat service architecture in Go implem
 - **Cryptographic Certificate Renewal:** A secure challenge-response protocol using signed nonces for safe identity rotation.
 - **Unified Media Metadata:** Server-side support for diverse media payloads (Image, Video, Audio, Document) with unified storage logic.
 - **Real-Time Read State Sync:** Consistent participant read-state tracking across multiple sessions and devices.
-- **Scalable Pub/Sub Broker:** Topology-agnostic horizontal scalability powered by a Redis-backed message broker.
+- **Scalable Pub/Sub Broker:** Topology-agnostic horizontal scalability powered by Redis or MongoDB (via tailable cursors).
 - **Persistent Session Store:** Production-grade MongoDB-backed session management with automatic TTL indexing and dual-expiration validation.
 - **Proactive Security Alerts:** Real-time monitoring of identity/session life with automated "Expiring Soon" warnings and immediate connection lockdowns.
 - **Observability:** Built-in Prometheus instrumentation for real-time monitoring of service health and RPC performance.
@@ -117,6 +117,8 @@ The server supports the following environment variables for security hardening:
 | `TRUSTED_PROXY_ADDRS` | `127.0.0.1,::1` | IPs allowed to inject internal identity headers. |
 | `ALLOWED_ORIGINS` | `*` | Allowed CORS origins (comma-separated). |
 | `CERT_CN` | `localhost` | Common Name for automatically generated server certs. |
+| `BROKER_TYPE` | `local` | Message broker implementation: `local`, `redis`, or `mongodb`. |
+| `PUBSUB_MONGO_URI` | (empty) | Dedicated MongoDB URI for PubSub (falls back to `MONGO_URI`). |
 
 ## Quickstart
 

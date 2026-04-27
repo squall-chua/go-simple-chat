@@ -13,6 +13,7 @@ type Config struct {
 	MongoURI           string   `mapstructure:"MONGO_URI"`
 	RedisAddr          string   `mapstructure:"REDIS_ADDR"`
 	BrokerType         string   `mapstructure:"BROKER_TYPE"`
+	PubSubMongoURI     string   `mapstructure:"PUBSUB_MONGO_URI"`
 	LogLevel           string   `mapstructure:"LOG_LEVEL"`
 	S3Endpoint         string   `mapstructure:"S3_ENDPOINT"`
 	S3AccessKey        string   `mapstructure:"S3_ACCESS_KEY"`
@@ -34,7 +35,8 @@ func LoadConfig() *Config {
 	pflag.String("port", "8080", "Port to listen on")
 	pflag.String("mongo-uri", "mongodb://user:password@localhost:27017/chat_db", "MongoDB connection URI")
 	pflag.String("redis-addr", "localhost:6379", "Redis address")
-	pflag.String("broker-type", "local", "Broker type (local or redis)")
+	pflag.String("broker-type", "local", "Broker type (local, redis, or mongodb)")
+	pflag.String("pubsub-mongo-uri", "", "MongoDB URI for PubSub (if empty, uses MONGO_URI)")
 	pflag.String("log-level", "info", "Log level (debug, info, warn, error)")
 	pflag.String("s3-endpoint", "localhost:9000", "S3 storage endpoint")
 	pflag.String("s3-access-key", "minioadmin", "S3 access key")
@@ -58,6 +60,7 @@ func LoadConfig() *Config {
 	viper.BindPFlag("MONGO_URI", pflag.Lookup("mongo-uri"))
 	viper.BindPFlag("REDIS_ADDR", pflag.Lookup("redis-addr"))
 	viper.BindPFlag("BROKER_TYPE", pflag.Lookup("broker-type"))
+	viper.BindPFlag("PUBSUB_MONGO_URI", pflag.Lookup("pubsub-mongo-uri"))
 	viper.BindPFlag("LOG_LEVEL", pflag.Lookup("log-level"))
 	viper.BindPFlag("S3_ENDPOINT", pflag.Lookup("s3-endpoint"))
 	viper.BindPFlag("S3_ACCESS_KEY", pflag.Lookup("s3-access-key"))

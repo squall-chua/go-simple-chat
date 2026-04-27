@@ -17,7 +17,7 @@ require (
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
-	github.com/squall-chua/gmqb v0.1.5
+	github.com/squall-chua/gmqb v0.1.6
 	github.com/stretchr/testify v1.11.1
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 	go.mongodb.org/mongo-driver/v2 v2.5.1
