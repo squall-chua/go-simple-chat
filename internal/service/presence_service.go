@@ -10,7 +10,6 @@ import (
 	"go-simple-chat/internal/repository"
 
 	"github.com/vmihailenco/msgpack/v5"
-	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 type PresenceService struct {
@@ -54,8 +53,7 @@ func (s *PresenceService) SetOffline(ctx context.Context, userID string) error {
 	}
 
 	// Persist last seen
-	oid, _ := bson.ObjectIDFromHex(userID)
-	_ = s.userRepo.UpdateLastSeen(ctx, oid, time.Now())
+	_ = s.userRepo.UpdateLastSeen(ctx, userID, time.Now())
 
 	return s.publishPresenceChange(ctx, userID, false)
 }
@@ -70,11 +68,7 @@ func (s *PresenceService) GetPresence(ctx context.Context, userID string) (bool,
 	}
 
 	// For offline users, get last seen from DB
-	oid, err := bson.ObjectIDFromHex(userID)
-	if err != nil {
-		return false, time.Time{}, err
-	}
-	user, err := s.userRepo.GetByID(ctx, oid)
+	user, err := s.userRepo.GetByID(ctx, userID)
 	if err != nil {
 		return false, time.Time{}, err
 	}
@@ -83,12 +77,7 @@ func (s *PresenceService) GetPresence(ctx context.Context, userID string) (bool,
 }
 
 func (s *PresenceService) publishPresenceChange(ctx context.Context, userID string, online bool) error {
-	oid, err := bson.ObjectIDFromHex(userID)
-	if err != nil {
-		return err
-	}
-
-	channels, err := s.chRepo.GetForUser(ctx, oid)
+	channels, err := s.chRepo.GetForUser(ctx, userID)
 	if err != nil {
 		return err
 	}
@@ -99,7 +88,7 @@ func (s *PresenceService) publishPresenceChange(ctx context.Context, userID stri
 	}
 
 	for _, ch := range channels {
-		topic := "presence:" + ch.ID.Hex()
+		topic := "presence:" + ch.ID
 		_ = s.broker.Publish(ctx, topic, event)
 	}
 

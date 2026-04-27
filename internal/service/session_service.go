@@ -9,12 +9,10 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"go-simple-chat/internal/model"
 	"go-simple-chat/internal/repository"
 	"time"
 
 	"github.com/google/uuid"
-	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 type SessionService struct {
@@ -84,14 +82,11 @@ func (s *SessionService) IssueToken(ctx context.Context, certPEM []byte, nonce s
 		return "", "", "", errors.New("certificate missing CommonName (UserID)")
 	}
 
-	// 3. Optional: Verify user exists
-	var user *model.User
-	oid, err := bson.ObjectIDFromHex(userID)
+	// 3. Verify user exists
+	user, err := s.userRepo.GetByID(ctx, userID)
 	if err != nil {
-		// If not hex, maybe it's the username (for some older/legacy certs if any)
+		// Fallback to username for legacy certs
 		user, err = s.userRepo.GetByUsername(ctx, userID)
-	} else {
-		user, err = s.userRepo.GetByID(ctx, oid)
 	}
 
 	if err != nil {
@@ -133,11 +128,11 @@ func (s *SessionService) IssueToken(ctx context.Context, certPEM []byte, nonce s
 	ttl := 24 * time.Hour
 
 	// 5. Store session with Certificate Expiration
-	if err := s.sessionRepo.Store(ctx, token, user.ID.Hex(), ttl, cert.NotAfter); err != nil {
+	if err := s.sessionRepo.Store(ctx, token, user.ID, ttl, cert.NotAfter); err != nil {
 		return "", "", "", fmt.Errorf("failed to store session: %w", err)
 	}
 
-	return token, user.ID.Hex(), username, nil
+	return token, user.ID, username, nil
 }
 
 func (s *SessionService) ValidateToken(ctx context.Context, token string) (string, time.Time, time.Time, error) {

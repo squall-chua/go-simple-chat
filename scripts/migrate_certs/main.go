@@ -14,6 +14,12 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
+type userDoc struct {
+	ID        bson.ObjectID `bson:"_id"`
+	Username  string        `bson:"username"`
+	PublicKey []byte        `bson:"public_key"`
+}
+
 func main() {
 	cfg := config.LoadConfig()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -36,16 +42,25 @@ func main() {
 	}
 	defer cursor.Close(ctx)
 
-	var users []model.User
-	if err := cursor.All(ctx, &users); err != nil {
+	var docs []userDoc
+	if err := cursor.All(ctx, &docs); err != nil {
 		log.Fatalf("failed to decode users: %v", err)
+	}
+
+	var users []model.User
+	for _, d := range docs {
+		users = append(users, model.User{
+			ID:        d.ID.Hex(),
+			Username:  d.Username,
+			PublicKey: d.PublicKey,
+		})
 	}
 
 	validCount := 0
 	errorCount := 0
 
 	for _, u := range users {
-		fmt.Printf("Checking User: %s (%s)\n", u.Username, u.ID.Hex())
+		fmt.Printf("Checking User: %s (%s)\n", u.Username, u.ID)
 		
 		if len(u.PublicKey) == 0 {
 			fmt.Printf("  [!] ERROR: Missing public key in database\n")

@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 type UserService struct {
@@ -51,7 +50,6 @@ func (s *UserService) Register(ctx context.Context, username string, publicKey [
 	}
 
 	user := &model.User{
-		ID:        bson.NewObjectID(),
 		Username:  username,
 		PublicKey: normalizedKey, // Always store PKIX
 		CreatedAt: time.Now(),
@@ -63,7 +61,7 @@ func (s *UserService) Register(ctx context.Context, username string, publicKey [
 	}
 
 	// Issue client certificate using the parsed public key
-	certPEM, keyPEM, err := s.ca.IssueUserCert(user.ID.Hex(), pub, nil)
+	certPEM, keyPEM, err := s.ca.IssueUserCert(user.ID, pub, nil)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to issue cert: %w", err)
 	}
@@ -72,11 +70,7 @@ func (s *UserService) Register(ctx context.Context, username string, publicKey [
 }
 
 func (s *UserService) GetUser(ctx context.Context, id string) (*model.User, error) {
-	oid, err := bson.ObjectIDFromHex(id)
-	if err != nil {
-		return nil, fmt.Errorf("invalid user id: %w", err)
-	}
-	return s.userRepo.GetByID(ctx, oid)
+	return s.userRepo.GetByID(ctx, id)
 }
 
 func (s *UserService) GetChallenge(ctx context.Context, username string) (string, string, error) {
@@ -86,11 +80,11 @@ func (s *UserService) GetChallenge(ctx context.Context, username string) (string
 	}
 
 	nonce := uuid.New().String()
-	if err := s.challengeRepo.Store(ctx, user.ID.Hex(), nonce, 2*time.Minute); err != nil {
+	if err := s.challengeRepo.Store(ctx, user.ID, nonce, 2*time.Minute); err != nil {
 		return "", "", fmt.Errorf("failed to store challenge: %w", err)
 	}
 
-	return user.ID.Hex(), nonce, nil
+	return user.ID, nonce, nil
 }
 
 func (s *UserService) RenewCertificate(ctx context.Context, userID string, signature []byte) ([]byte, error) {
@@ -138,7 +132,8 @@ func (s *UserService) RenewCertificate(ctx context.Context, userID string, signa
 
 	return certPEM, nil
 }
-func (s *UserService) GetUserByID(ctx context.Context, id bson.ObjectID) (*model.User, error) {
+
+func (s *UserService) GetUserByID(ctx context.Context, id string) (*model.User, error) {
 	return s.userRepo.GetByID(ctx, id)
 }
 

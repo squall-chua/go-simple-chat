@@ -10,13 +10,16 @@ import (
 	"go-simple-chat/internal/broker"
 	"go-simple-chat/internal/config"
 	"go-simple-chat/internal/crypto"
+	"go-simple-chat/internal/repository"
 	"go-simple-chat/internal/repository/mongo"
+	"go-simple-chat/internal/repository/postgres"
 	"go-simple-chat/internal/server"
 	"go-simple-chat/internal/service"
 	chatgrpc "go-simple-chat/internal/transport/grpc"
 	chathttp "go-simple-chat/internal/transport/http"
 	chatv1 "go-simple-chat/api/v1"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
@@ -32,21 +35,44 @@ func main() {
 	defer stop()
 
 	// 1. Repositories
-	store, err := mongo.NewStore(ctx, cfg.MongoURI)
-	if err != nil {
-		logger.Fatal("failed to init mongo", zap.Error(err))
-	}
-	defer store.Close(context.Background())
+	var userRepo repository.UserRepository
+	var chRepo repository.ChannelRepository
+	var msgRepo repository.MessageRepository
+	var readStateRepo repository.ReadStateRepository
+	var challengeRepo repository.ChallengeRepository
+	var sessionRepo repository.SessionRepository
 
-	userRepo, _ := mongo.NewUserRepo(ctx, store.DB)
-	chRepo, _ := mongo.NewChannelRepo(ctx, store.DB)
-	msgRepo, _ := mongo.NewMessageRepo(ctx, store.DB)
-	readStateRepo, _ := mongo.NewReadStateRepo(ctx, store.DB)
-	challengeRepo, _ := mongo.NewChallengeRepo(ctx, store.DB)
-	sessionRepo, _ := mongo.NewSessionRepo(ctx, store.DB)
+	if cfg.DBType == "postgres" {
+		pool, err := pgxpool.New(ctx, cfg.PostgresDSN)
+		if err != nil {
+			logger.Fatal("failed to init postgres pool", zap.Error(err))
+		}
+		defer pool.Close()
+
+		userRepo = postgres.NewUserRepository(pool)
+		chRepo = postgres.NewChannelRepository(pool)
+		msgRepo = postgres.NewMessageRepository(pool)
+		readStateRepo = postgres.NewReadStateRepository(pool)
+		challengeRepo = postgres.NewChallengeRepository(pool)
+		sessionRepo = postgres.NewSessionRepository(pool)
+	} else {
+		store, err := mongo.NewStore(ctx, cfg.MongoURI)
+		if err != nil {
+			logger.Fatal("failed to init mongo", zap.Error(err))
+		}
+		defer store.Close(context.Background())
+
+		userRepo, _ = mongo.NewUserRepo(ctx, store.DB)
+		chRepo, _ = mongo.NewChannelRepo(ctx, store.DB)
+		msgRepo, _ = mongo.NewMessageRepo(ctx, store.DB)
+		readStateRepo, _ = mongo.NewReadStateRepo(ctx, store.DB)
+		challengeRepo, _ = mongo.NewChallengeRepo(ctx, store.DB)
+		sessionRepo, _ = mongo.NewSessionRepo(ctx, store.DB)
+	}
 
 	// 2. Broker
 	var b broker.Broker
+	var err error
 	switch cfg.BrokerType {
 	case "redis":
 		b = broker.NewRedisBroker(cfg.RedisAddr, logger)
@@ -59,12 +85,26 @@ func main() {
 		if err != nil {
 			logger.Fatal("failed to init mongo pubsub", zap.Error(err))
 		}
-		// Keep connection open for broker lifetime
 		defer psStore.Close(context.Background())
 
 		b, err = broker.NewMongoBroker(psStore.DB, logger)
 		if err != nil {
 			logger.Fatal("failed to init mongo broker", zap.Error(err))
+		}
+	case "postgres":
+		dsn := cfg.PubSubPostgresDSN
+		if dsn == "" {
+			dsn = cfg.PostgresDSN
+		}
+		psPool, err := pgxpool.New(ctx, dsn)
+		if err != nil {
+			logger.Fatal("failed to init postgres pubsub pool", zap.Error(err))
+		}
+		defer psPool.Close()
+
+		b, err = broker.NewPostgresBroker(dsn, psPool, logger)
+		if err != nil {
+			logger.Fatal("failed to init postgres broker", zap.Error(err))
 		}
 	default:
 		b = broker.NewLocalBroker(logger)

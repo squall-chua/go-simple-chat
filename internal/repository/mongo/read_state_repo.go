@@ -5,21 +5,27 @@ import (
 	"fmt"
 	"time"
 
-	"go-simple-chat/internal/model"
 	"github.com/squall-chua/gmqb"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
+type readStateDoc struct {
+	UserID    bson.ObjectID `bson:"user_id"`
+	ChannelID bson.ObjectID `bson:"channel_id"`
+	LastRead  bson.ObjectID `bson:"last_read"`
+	UpdatedAt time.Time     `bson:"updated_at"`
+}
+
 type ReadStateRepo struct {
-	col *gmqb.Collection[model.ReadState]
+	col *gmqb.Collection[readStateDoc]
 }
 
 func NewReadStateRepo(ctx context.Context, db *mongo.Database) (*ReadStateRepo, error) {
 	col := db.Collection("read_states")
-	f := gmqb.Field[model.ReadState]
+	f := gmqb.Field[readStateDoc]
 
-	wrapped := gmqb.Wrap[model.ReadState](col)
+	wrapped := gmqb.Wrap[readStateDoc](col)
 
 	// Index: user_id + channel_id unique
 	_, err := wrapped.CreateIndex(ctx, gmqb.NewIndex(gmqb.SortSpec(
@@ -33,17 +39,30 @@ func NewReadStateRepo(ctx context.Context, db *mongo.Database) (*ReadStateRepo, 
 	return &ReadStateRepo{col: wrapped}, nil
 }
 
-func (r *ReadStateRepo) Upsert(ctx context.Context, userID, channelID, lastRead bson.ObjectID) (bool, error) {
-	f := gmqb.Field[model.ReadState]
+func (r *ReadStateRepo) Upsert(ctx context.Context, userID, channelID, lastRead string) (bool, error) {
+	uOID, err := bson.ObjectIDFromHex(userID)
+	if err != nil {
+		return false, err
+	}
+	chOID, err := bson.ObjectIDFromHex(channelID)
+	if err != nil {
+		return false, err
+	}
+	lrOID, err := bson.ObjectIDFromHex(lastRead)
+	if err != nil {
+		return false, err
+	}
+
+	f := gmqb.Field[readStateDoc]
 	now := time.Now()
 
 	filter := gmqb.And(
-		gmqb.Eq(f("UserID"), userID),
-		gmqb.Eq(f("ChannelID"), channelID),
+		gmqb.Eq(f("UserID"), uOID),
+		gmqb.Eq(f("ChannelID"), chOID),
 	)
 
 	update := gmqb.NewUpdate().
-		Max(f("LastRead"), lastRead).
+		Max(f("LastRead"), lrOID).
 		Set(f("UpdatedAt"), now)
 
 	res, err := r.col.UpdateOne(ctx, filter, update, gmqb.WithUpsert(true))
@@ -55,16 +74,21 @@ func (r *ReadStateRepo) Upsert(ctx context.Context, userID, channelID, lastRead 
 	return res.UpsertedCount > 0 || res.ModifiedCount > 0, nil
 }
 
-func (r *ReadStateRepo) GetForUser(ctx context.Context, userID bson.ObjectID) (map[bson.ObjectID]bson.ObjectID, error) {
-	f := gmqb.Field[model.ReadState]
-	states, err := r.col.Find(ctx, gmqb.Eq(f("UserID"), userID))
+func (r *ReadStateRepo) GetForUser(ctx context.Context, userID string) (map[string]string, error) {
+	uOID, err := bson.ObjectIDFromHex(userID)
 	if err != nil {
 		return nil, err
 	}
 
-	result := make(map[bson.ObjectID]bson.ObjectID)
+	f := gmqb.Field[readStateDoc]
+	states, err := r.col.Find(ctx, gmqb.Eq(f("UserID"), uOID))
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]string)
 	for _, s := range states {
-		result[s.ChannelID] = s.LastRead
+		result[s.ChannelID.Hex()] = s.LastRead.Hex()
 	}
 	return result, nil
 }

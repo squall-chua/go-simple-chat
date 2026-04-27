@@ -9,8 +9,9 @@ A high-performance, horizontally-scalable chat service architecture in Go implem
 - **Cryptographic Certificate Renewal:** A secure challenge-response protocol using signed nonces for safe identity rotation.
 - **Unified Media Metadata:** Server-side support for diverse media payloads (Image, Video, Audio, Document) with unified storage logic.
 - **Real-Time Read State Sync:** Consistent participant read-state tracking across multiple sessions and devices.
-- **Scalable Pub/Sub Broker:** Topology-agnostic horizontal scalability powered by Redis or MongoDB (via tailable cursors).
-- **Persistent Session Store:** Production-grade MongoDB-backed session management with automatic TTL indexing and dual-expiration validation.
+- **Scalable Pub/Sub Broker:** Topology-agnostic horizontal scalability powered by Redis, MongoDB (via tailable cursors), or PostgreSQL (via `LISTEN/NOTIFY`).
+- **Multi-Backend Persistence:** Seamless support for both **MongoDB** and **PostgreSQL** storage, featuring UUIDv7 time-ordered IDs for relational consistency.
+- **Persistent Session Store:** Production-grade session management with automatic TTL indexing (Mongo) or scheduled expiry (Postgres).
 - **Proactive Security Alerts:** Real-time monitoring of identity/session life with automated "Expiring Soon" warnings and immediate connection lockdowns.
 - **Observability:** Built-in Prometheus instrumentation for real-time monitoring of service health and RPC performance.
 
@@ -108,17 +109,33 @@ The web client securely bridges standard browser environments with the mTLS-stri
 
 ## ⚙️ Configuration
 
-The server supports the following environment variables for security hardening:
+The server supports the following environment variables:
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `PORT` | `8080` | Secure gRPC/mTLS port. |
 | `PUBLIC_PORT` | `8081` | Public REST/WebSocket gateway port. |
+| `DB_TYPE` | `mongodb` | Primary database backend: `mongodb` or `postgres`. |
+| `MONGO_URI` | `mongodb://...` | MongoDB connection URI. |
+| `POSTGRES_DSN` | `postgres://...` | PostgreSQL connection DSN. |
+| `BROKER_TYPE` | `local` | Message broker implementation: `local`, `redis`, `mongodb`, or `postgres`. |
+| `PUBSUB_MONGO_URI` | (empty) | Dedicated MongoDB URI for PubSub (falls back to `MONGO_URI`). |
+| `PUBSUB_POSTGRES_DSN` | (empty) | Dedicated PostgreSQL DSN for PubSub (falls back to `POSTGRES_DSN`). |
 | `TRUSTED_PROXY_ADDRS` | `127.0.0.1,::1` | IPs allowed to inject internal identity headers. |
 | `ALLOWED_ORIGINS` | `*` | Allowed CORS origins (comma-separated). |
 | `CERT_CN` | `localhost` | Common Name for automatically generated server certs. |
-| `BROKER_TYPE` | `local` | Message broker implementation: `local`, `redis`, or `mongodb`. |
-| `PUBSUB_MONGO_URI` | (empty) | Dedicated MongoDB URI for PubSub (falls back to `MONGO_URI`). |
+
+### Database Backends
+
+Go Simple Chat is designed to be database-agnostic. You can choose your storage and PubSub layers independently:
+
+1. MongoDB Stack: Leverages capped collections for high-performance messaging and TTL indexes for session management.
+2. PostgreSQL Stack: Utilizes **UUIDv7** for time-ordered primary keys and native **LISTEN/NOTIFY** for real-time signaling, ensuring strict relational integrity.
+   > [!IMPORTANT]
+   > For PostgreSQL deployments, you must manually initialize the database using the provided schema:
+   > `psql -d chat_db -f scripts/postgres/schema.sql`
+
+To switch backends, simply update the `DB_TYPE` and `BROKER_TYPE` environment variables. No code changes are required for existing services.
 
 ## Quickstart
 

@@ -22,9 +22,9 @@ import (
 	chatgrpc "go-simple-chat/internal/transport/grpc"
 	chatv1 "go-simple-chat/api/v1"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -36,40 +36,53 @@ type mockUserRepo struct {
 	PublicKey []byte
 }
 
-func (m *mockUserRepo) Create(ctx context.Context, u *model.User) error { return nil }
-func (m *mockUserRepo) UpdateLastSeen(ctx context.Context, id bson.ObjectID, lastSeen time.Time) error {
+func (m *mockUserRepo) Create(ctx context.Context, u *model.User) error { 
+	if u.ID == "" {
+		u.ID = uuid.New().String()
+	}
+	return nil 
+}
+func (m *mockUserRepo) UpdateLastSeen(ctx context.Context, id string, lastSeen time.Time) error {
 	return nil
 }
-func (m *mockUserRepo) GetByID(ctx context.Context, id bson.ObjectID) (*model.User, error) {
+func (m *mockUserRepo) GetByID(ctx context.Context, id string) (*model.User, error) {
 	return &model.User{ID: id, Username: "test_user", PublicKey: m.PublicKey}, nil
+}
+func (m *mockUserRepo) GetByUsername(ctx context.Context, username string) (*model.User, error) {
+	return &model.User{ID: uuid.New().String(), Username: username, PublicKey: m.PublicKey}, nil
 }
 
 type mockMsgRepo struct{ repository.MessageRepository }
 
-func (m *mockMsgRepo) Create(ctx context.Context, msg *model.Message) error { return nil }
-
-func (m *mockChRepo) GetByID(ctx context.Context, id bson.ObjectID) (*model.Channel, error) {
-	return &model.Channel{ID: id, Participants: []bson.ObjectID{m.ParticipantID}}, nil
-}
-func (m *mockChRepo) UpdateLastMessageID(ctx context.Context, id, mid bson.ObjectID) error {
-	return nil
-}
-func (m *mockChRepo) GetForUser(ctx context.Context, id bson.ObjectID) ([]*model.Channel, error) {
-	return nil, nil
+func (m *mockMsgRepo) Create(ctx context.Context, msg *model.Message) error { 
+	if msg.ID == "" {
+		msg.ID = uuid.New().String()
+	}
+	return nil 
 }
 
 type mockChRepo struct {
 	repository.ChannelRepository
-	ParticipantID bson.ObjectID
+	ParticipantID string
+}
+
+func (m *mockChRepo) GetByID(ctx context.Context, id string) (*model.Channel, error) {
+	return &model.Channel{ID: id, Participants: []string{m.ParticipantID}}, nil
+}
+func (m *mockChRepo) UpdateLastMessageID(ctx context.Context, id, mid string) error {
+	return nil
+}
+func (m *mockChRepo) GetForUser(ctx context.Context, id string) ([]*model.Channel, error) {
+	return nil, nil
 }
 
 type mockReadStateRepo struct{ repository.ReadStateRepository }
 
-func (m *mockReadStateRepo) Upsert(ctx context.Context, u, c, l bson.ObjectID) (bool, error) {
+func (m *mockReadStateRepo) Upsert(ctx context.Context, u, c, l string) (bool, error) {
 	return true, nil
 }
-func (m *mockReadStateRepo) GetForUser(ctx context.Context, u bson.ObjectID) (map[bson.ObjectID]bson.ObjectID, error) {
-	return nil, nil
+func (m *mockReadStateRepo) GetForUser(ctx context.Context, u string) (map[string]string, error) {
+	return make(map[string]string), nil
 }
 
 type mockChallengeRepo struct{ repository.ChallengeRepository }
@@ -111,7 +124,7 @@ func TestServerIntegration(t *testing.T) {
 
 	testBroker := broker.NewLocalBroker(zap.NewNop())
 	uRepo := &mockUserRepo{}
-	testUserID := bson.NewObjectID()
+	testUserID := uuid.New().String()
 	chRepo := &mockChRepo{ParticipantID: testUserID}
 	presenceSvc := service.NewPresenceService(chRepo, uRepo, testBroker)
 	
@@ -152,7 +165,7 @@ func TestServerIntegration(t *testing.T) {
 	time.Sleep(300 * time.Millisecond) // Wait for start
 
 	// 3. Client Setup (mTLS)
-	certPEM, keyPEM, err := ca.IssueUserCert(testUserID.Hex(), nil, []string{"localhost", "127.0.0.1"})
+	certPEM, keyPEM, err := ca.IssueUserCert(testUserID, nil, []string{"localhost", "127.0.0.1"})
 	require.NoError(t, err)
 
 	// Update mock repo with the issued public key for pinning check
@@ -190,7 +203,7 @@ func TestServerIntegration(t *testing.T) {
 	defer opCancel()
 
 	resp, err := client.SendMessage(opCtx, &chatv1.SendMessageRequest{
-		ChannelId: bson.NewObjectID().Hex(),
+		ChannelId: uuid.New().String(),
 		Content:   "hello",
 	})
 	

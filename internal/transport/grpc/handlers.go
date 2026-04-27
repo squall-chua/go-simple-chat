@@ -15,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"go.mongodb.org/mongo-driver/v2/bson"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
@@ -78,7 +77,7 @@ func (h *ChatHandler) UploadFile(ctx context.Context, req *chatv1.UploadFileRequ
 	}, nil
 }
 
-func (h *ChatHandler) getUserIDFromContext(ctx context.Context) (bson.ObjectID, time.Time, time.Time, error) {
+func (h *ChatHandler) getUserIDFromContext(ctx context.Context) (string, time.Time, time.Time, error) {
 	var clientCert *x509.Certificate
 	var sessionToken string
 
@@ -117,37 +116,33 @@ func (h *ChatHandler) getUserIDFromContext(ctx context.Context) (bson.ObjectID, 
 	if sessionToken != "" && h.sessionService != nil {
 		userID, sessionExp, identityExp, err := h.sessionService.ValidateToken(ctx, sessionToken)
 		if err == nil {
-			oid, err := bson.ObjectIDFromHex(userID)
-			if err == nil {
-				return oid, sessionExp, identityExp, nil
-			}
+			return userID, sessionExp, identityExp, nil
 		}
 	}
 
 	// Case B: Fallback to Certificate Identity
 	if clientCert != nil {
-		cn := clientCert.Subject.CommonName
-		oid, err := bson.ObjectIDFromHex(cn)
-		if err != nil {
-			return bson.NilObjectID, time.Time{}, time.Time{}, status.Error(codes.Unauthenticated, "invalid certificate identity")
+		userID := clientCert.Subject.CommonName
+		if userID == "" {
+			return "", time.Time{}, time.Time{}, status.Error(codes.Unauthenticated, "invalid certificate identity")
 		}
 
 		// Verify user exists
-		user, err := h.userService.GetUserByID(ctx, oid)
+		user, err := h.userService.GetUserByID(ctx, userID)
 		if err != nil {
-			return bson.NilObjectID, time.Time{}, time.Time{}, status.Error(codes.Unauthenticated, "user not found")
+			return "", time.Time{}, time.Time{}, status.Error(codes.Unauthenticated, "user not found")
 		}
 
 		// Public key pinning
 		certPubKey, err := x509.MarshalPKIXPublicKey(clientCert.PublicKey)
 		if err == nil && !bytes.Equal(certPubKey, user.PublicKey) {
-			return bson.NilObjectID, time.Time{}, time.Time{}, status.Error(codes.Unauthenticated, "certificate public key mismatch")
+			return "", time.Time{}, time.Time{}, status.Error(codes.Unauthenticated, "certificate public key mismatch")
 		}
 
-		return oid, clientCert.NotAfter, clientCert.NotAfter, nil
+		return userID, clientCert.NotAfter, clientCert.NotAfter, nil
 	}
 
-	return bson.NilObjectID, time.Time{}, time.Time{}, status.Error(codes.Unauthenticated, "authentication required")
+	return "", time.Time{}, time.Time{}, status.Error(codes.Unauthenticated, "authentication required")
 }
 
 func (h *ChatHandler) isTrustedProxy(addr net.Addr) bool {
@@ -177,19 +172,12 @@ func (h *ChatHandler) HealthCheck(ctx context.Context, req *chatv1.HealthCheckRe
 }
 
 func (h *ChatHandler) CreateChannel(ctx context.Context, req *chatv1.CreateChannelRequest) (*chatv1.CreateChannelResponse, error) {
-	creatorOID, _, _, err := h.getUserIDFromContext(ctx)
+	creatorID, _, _, err := h.getUserIDFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	var participants []bson.ObjectID
-	for _, p := range req.Participants {
-		oid, err := bson.ObjectIDFromHex(p)
-		if err != nil {
-			return nil, fmt.Errorf("invalid participant id %s: %w", p, err)
-		}
-		participants = append(participants, oid)
-	}
+	participants := req.Participants
 	for _, uname := range req.ParticipantUsernames {
 		u, err := h.userService.GetUserByUsername(ctx, uname)
 		if err == nil {
@@ -198,21 +186,21 @@ func (h *ChatHandler) CreateChannel(ctx context.Context, req *chatv1.CreateChann
 	}
 
 	isGroup := req.Type == chatv1.CreateChannelRequest_TYPE_GROUP
-	ch, err := h.chatService.CreateChannel(ctx, creatorOID, participants, req.Name, isGroup)
+	ch, err := h.chatService.CreateChannel(ctx, creatorID, participants, req.Name, isGroup)
 	if err != nil {
 		return nil, err
 	}
 
-	return &chatv1.CreateChannelResponse{ChannelId: ch.ID.Hex()}, nil
+	return &chatv1.CreateChannelResponse{ChannelId: ch.ID}, nil
 }
 
 func (h *ChatHandler) ListChannels(ctx context.Context, req *chatv1.ListChannelsRequest) (*chatv1.ListChannelsResponse, error) {
-	uOID, _, _, err := h.getUserIDFromContext(ctx)
+	userID, _, _, err := h.getUserIDFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	channels, err := h.chatService.GetUserChannels(ctx, uOID.Hex())
+	channels, err := h.chatService.GetUserChannels(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -222,14 +210,13 @@ func (h *ChatHandler) ListChannels(ctx context.Context, req *chatv1.ListChannels
 	for _, ch := range channels {
 		var participants []string
 		var usernames []string
-		for _, p := range ch.Participants {
-			pID := p.Hex()
+		for _, pID := range ch.Participants {
 			participants = append(participants, pID)
 
 			if name, ok := userCache[pID]; ok {
 				usernames = append(usernames, name)
 			} else {
-				user, err := h.userService.GetUserByID(ctx, p)
+				user, err := h.userService.GetUserByID(ctx, pID)
 				if err == nil {
 					usernames = append(usernames, user.Username)
 					userCache[pID] = user.Username
@@ -240,13 +227,13 @@ func (h *ChatHandler) ListChannels(ctx context.Context, req *chatv1.ListChannels
 		}
 
 		results = append(results, &chatv1.ChannelInfo{
-			Id:                   ch.ID.Hex(),
+			Id:                   ch.ID,
 			Type:                 string(ch.Type),
 			Participants:         participants,
 			ParticipantUsernames: usernames,
 			Name:                 ch.Name,
-			LastReadId:           ch.LastReadID.Hex(),
-			LastMessageId:        ch.LastMessageID.Hex(),
+			LastReadId:           ch.LastReadID,
+			LastMessageId:        ch.LastMessageID,
 			UnreadCount:          h.chatService.GetUnreadCount(ctx, ch.ID, ch.LastReadID),
 		})
 	}
@@ -255,12 +242,12 @@ func (h *ChatHandler) ListChannels(ctx context.Context, req *chatv1.ListChannels
 }
 
 func (h *ChatHandler) MarkAsRead(ctx context.Context, req *chatv1.MarkAsReadRequest) (*emptypb.Empty, error) {
-	uOID, _, _, err := h.getUserIDFromContext(ctx)
+	userID, _, _, err := h.getUserIDFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	err = h.chatService.MarkAsRead(ctx, uOID.Hex(), req.ChannelId, req.MessageId)
+	err = h.chatService.MarkAsRead(ctx, userID, req.ChannelId, req.MessageId)
 	if err != nil {
 		return nil, err
 	}
@@ -269,12 +256,12 @@ func (h *ChatHandler) MarkAsRead(ctx context.Context, req *chatv1.MarkAsReadRequ
 }
 
 func (h *ChatHandler) GetMessages(ctx context.Context, req *chatv1.GetMessagesRequest) (*chatv1.GetMessagesResponse, error) {
-	uOID, _, _, err := h.getUserIDFromContext(ctx)
+	userID, _, _, err := h.getUserIDFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	msgs, err := h.chatService.GetMessages(ctx, uOID.Hex(), req.ChannelId, int(req.Limit), req.BeforeId)
+	msgs, err := h.chatService.GetMessages(ctx, userID, req.ChannelId, int(req.Limit), req.BeforeId)
 	if err != nil {
 		return nil, err
 	}
@@ -284,13 +271,13 @@ func (h *ChatHandler) GetMessages(ctx context.Context, req *chatv1.GetMessagesRe
 	var results []*chatv1.MessageReceived
 	for _, m := range msgs {
 		if m.SenderUsername == "" {
-			if cached, ok := userCache[m.SenderID.Hex()]; ok {
+			if cached, ok := userCache[m.SenderID]; ok {
 				m.SenderUsername = cached
 			} else {
 				user, err := h.userService.GetUserByID(ctx, m.SenderID)
 				if err == nil {
 					m.SenderUsername = user.Username
-					userCache[m.SenderID.Hex()] = user.Username
+					userCache[m.SenderID] = user.Username
 				}
 			}
 		}
@@ -301,7 +288,7 @@ func (h *ChatHandler) GetMessages(ctx context.Context, req *chatv1.GetMessagesRe
 }
 
 func (h *ChatHandler) AddParticipant(ctx context.Context, req *chatv1.AddParticipantRequest) (*chatv1.AddParticipantResponse, error) {
-	uOID, _, _, err := h.getUserIDFromContext(ctx)
+	userID, _, _, err := h.getUserIDFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -310,11 +297,11 @@ func (h *ChatHandler) AddParticipant(ctx context.Context, req *chatv1.AddPartici
 	for _, uname := range req.Usernames {
 		user, err := h.userService.GetUserByUsername(ctx, uname)
 		if err == nil {
-			userIDs = append(userIDs, user.ID.Hex())
+			userIDs = append(userIDs, user.ID)
 		}
 	}
 
-	err = h.chatService.AddParticipants(ctx, uOID.Hex(), req.ChannelId, userIDs)
+	err = h.chatService.AddParticipants(ctx, userID, req.ChannelId, userIDs)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -329,7 +316,7 @@ func (h *ChatHandler) Register(ctx context.Context, req *chatv1.RegisterRequest)
 	}
 
 	return &chatv1.RegisterResponse{
-		UserId:      user.ID.Hex(),
+		UserId:      user.ID,
 		Certificate: cert,
 		PrivateKey:  key,
 	}, nil
@@ -357,12 +344,7 @@ func (h *ChatHandler) RenewCertificate(ctx context.Context, req *chatv1.RenewCer
 }
 
 func (h *ChatHandler) SendMessage(ctx context.Context, req *chatv1.SendMessageRequest) (*chatv1.SendMessageResponse, error) {
-	channelOID, err := bson.ObjectIDFromHex(req.ChannelId)
-	if err != nil {
-		return nil, fmt.Errorf("invalid channel id: %w", err)
-	}
-
-	senderOID, _, _, err := h.getUserIDFromContext(ctx)
+	senderID, _, _, err := h.getUserIDFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -376,14 +358,14 @@ func (h *ChatHandler) SendMessage(ctx context.Context, req *chatv1.SendMessageRe
 		})
 	}
 
-	sender, err := h.userService.GetUserByID(ctx, senderOID)
+	sender, err := h.userService.GetUserByID(ctx, senderID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch sender info: %w", err)
 	}
 
 	msg := &model.Message{
-		ChannelID:      channelOID,
-		SenderID:       senderOID,
+		ChannelID:      req.ChannelId,
+		SenderID:       senderID,
 		SenderUsername: sender.Username,
 		Content:        req.Content,
 		Medias:         medias,
@@ -396,7 +378,7 @@ func (h *ChatHandler) SendMessage(ctx context.Context, req *chatv1.SendMessageRe
 	}
 
 	metrics.TotalMessages.Inc()
-	return &chatv1.SendMessageResponse{MessageId: msg.ID.Hex()}, nil
+	return &chatv1.SendMessageResponse{MessageId: msg.ID}, nil
 }
 
 func (h *ChatHandler) BidiStreamChat(stream chatv1.ChatService_BidiStreamChatServer) error {
@@ -410,11 +392,11 @@ func (h *ChatHandler) BidiStreamChat(stream chatv1.ChatService_BidiStreamChatSer
 	metrics.OnlineUsers.Inc()
 	defer metrics.OnlineUsers.Dec()
 
-	_ = h.presenceService.SetOnline(ctx, userID.Hex())
-	defer h.presenceService.SetOffline(context.Background(), userID.Hex())
+	_ = h.presenceService.SetOnline(ctx, userID)
+	defer h.presenceService.SetOffline(context.Background(), userID)
 
 	// 2. Subscription Management
-	channels, _ := h.chatService.GetUserChannels(ctx, userID.Hex())
+	channels, _ := h.chatService.GetUserChannels(ctx, userID)
 
 	// 3. State to protect stream.Send and deduplicate presence
 	var stateMu sync.Mutex
@@ -433,7 +415,7 @@ func (h *ChatHandler) BidiStreamChat(stream chatv1.ChatService_BidiStreamChatSer
 
 	// 4a. Initial subscriptions for existing channels
 	for _, ch := range channels {
-		h.subscribeToChannel(subCtx, ch.ID.Hex(), userID.Hex(), safeSend, &stateMu, lastPresence)
+		h.subscribeToChannel(subCtx, ch.ID, userID, safeSend, &stateMu, lastPresence)
 	}
 
 	// 4b. Personal signal topic for dynamic updates (New channels, etc.)
@@ -508,16 +490,16 @@ func (h *ChatHandler) BidiStreamChat(stream chatv1.ChatService_BidiStreamChatSer
 
 	// 4c. Personal signal topic for dynamic updates
 	go func() {
-		_ = h.chatService.SubscribeToSystemSignals(subCtx, userID.Hex(), func(ctx context.Context, sig *model.SystemSignal) error {
+		_ = h.chatService.SubscribeToSystemSignals(subCtx, userID, func(ctx context.Context, sig *model.SystemSignal) error {
 			switch sig.Type {
 			case model.SignalNewChannel:
-				h.subscribeToChannel(subCtx, sig.ChannelID.Hex(), userID.Hex(), safeSend, &stateMu, lastPresence)
+				h.subscribeToChannel(subCtx, sig.ChannelID, userID, safeSend, &stateMu, lastPresence)
 
 				// Notify the user about the new channel
 				_ = safeSend(&chatv1.StreamMessageResponse{
 					Payload: &chatv1.StreamMessageResponse_ChannelJoined{
 						ChannelJoined: &chatv1.ChannelJoined{
-							ChannelId: sig.ChannelID.Hex(),
+							ChannelId: sig.ChannelID,
 						},
 					},
 				})
@@ -526,7 +508,7 @@ func (h *ChatHandler) BidiStreamChat(stream chatv1.ChatService_BidiStreamChatSer
 				_ = safeSend(&chatv1.StreamMessageResponse{
 					Payload: &chatv1.StreamMessageResponse_ParticipantAdded{
 						ParticipantAdded: &chatv1.ParticipantAdded{
-							ChannelId: sig.ChannelID.Hex(),
+							ChannelId: sig.ChannelID,
 						},
 					},
 				})
@@ -554,11 +536,6 @@ func (h *ChatHandler) BidiStreamChat(stream chatv1.ChatService_BidiStreamChatSer
 
 			switch payload := req.Payload.(type) {
 			case *chatv1.StreamMessageRequest_SendMessage:
-				channelOID, err := bson.ObjectIDFromHex(payload.SendMessage.ChannelId)
-				if err != nil {
-					continue
-				}
-
 				var medias []model.Media
 				for _, m := range payload.SendMessage.Medias {
 					medias = append(medias, model.Media{
@@ -569,7 +546,7 @@ func (h *ChatHandler) BidiStreamChat(stream chatv1.ChatService_BidiStreamChatSer
 				}
 
 				msg := &model.Message{
-					ChannelID: channelOID,
+					ChannelID: payload.SendMessage.ChannelId,
 					SenderID:  userID,
 					Content:   payload.SendMessage.Content,
 					Medias:    medias,
@@ -578,7 +555,7 @@ func (h *ChatHandler) BidiStreamChat(stream chatv1.ChatService_BidiStreamChatSer
 				}
 				_ = h.chatService.SendMessage(ctx, msg)
 			case *chatv1.StreamMessageRequest_Heartbeat:
-				_ = h.presenceService.SetOnline(ctx, userID.Hex())
+				_ = h.presenceService.SetOnline(ctx, userID)
 			}
 		}
 	}()
@@ -606,9 +583,9 @@ func toProtoMsg(m *model.Message) *chatv1.MessageReceived {
 	}
 
 	return &chatv1.MessageReceived{
-		MessageId:      m.ID.Hex(),
-		ChannelId:      m.ChannelID.Hex(),
-		SenderId:       m.SenderID.Hex(),
+		MessageId:      m.ID,
+		ChannelId:      m.ChannelID,
+		SenderId:       m.SenderID,
 		SenderUsername: m.SenderUsername,
 		Content:        m.Content,
 		Medias:         medias,
@@ -673,7 +650,7 @@ func (h *ChatHandler) GetPresence(ctx context.Context, req *chatv1.GetPresenceRe
 		}
 		user, err := h.userService.GetUserByUsername(ctx, uname)
 		if err == nil {
-			uniqueIDs[user.ID.Hex()] = struct{}{}
+			uniqueIDs[user.ID] = struct{}{}
 		}
 	}
 
@@ -691,8 +668,7 @@ func (h *ChatHandler) GetPresence(ctx context.Context, req *chatv1.GetPresenceRe
 
 		// Hydrate username for the response if possible
 		username := ""
-		oid, _ := bson.ObjectIDFromHex(id)
-		user, err := h.userService.GetUserByID(ctx, oid)
+		user, err := h.userService.GetUserByID(ctx, id)
 		if err == nil {
 			username = user.Username
 		}

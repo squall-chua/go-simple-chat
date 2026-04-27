@@ -10,10 +10,13 @@ import (
 
 type Config struct {
 	Port               string   `mapstructure:"PORT"`
+	DBType             string   `mapstructure:"DB_TYPE"`
 	MongoURI           string   `mapstructure:"MONGO_URI"`
+	PostgresDSN        string   `mapstructure:"POSTGRES_DSN"`
 	RedisAddr          string   `mapstructure:"REDIS_ADDR"`
 	BrokerType         string   `mapstructure:"BROKER_TYPE"`
 	PubSubMongoURI     string   `mapstructure:"PUBSUB_MONGO_URI"`
+	PubSubPostgresDSN  string   `mapstructure:"PUBSUB_POSTGRES_DSN"`
 	LogLevel           string   `mapstructure:"LOG_LEVEL"`
 	S3Endpoint         string   `mapstructure:"S3_ENDPOINT"`
 	S3AccessKey        string   `mapstructure:"S3_ACCESS_KEY"`
@@ -33,10 +36,13 @@ type Config struct {
 
 func LoadConfig() *Config {
 	pflag.String("port", "8080", "Port to listen on")
+	pflag.String("db-type", "mongodb", "Database type (mongodb or postgres)")
 	pflag.String("mongo-uri", "mongodb://user:password@localhost:27017/chat_db", "MongoDB connection URI")
+	pflag.String("postgres-dsn", "postgres://user:password@localhost:5432/chat_db", "PostgreSQL connection DSN")
 	pflag.String("redis-addr", "localhost:6379", "Redis address")
-	pflag.String("broker-type", "local", "Broker type (local, redis, or mongodb)")
+	pflag.String("broker-type", "local", "Broker type (local, redis, mongodb, or postgres)")
 	pflag.String("pubsub-mongo-uri", "", "MongoDB URI for PubSub (if empty, uses MONGO_URI)")
+	pflag.String("pubsub-postgres-dsn", "", "PostgreSQL DSN for PubSub (if empty, uses POSTGRES_DSN)")
 	pflag.String("log-level", "info", "Log level (debug, info, warn, error)")
 	pflag.String("s3-endpoint", "localhost:9000", "S3 storage endpoint")
 	pflag.String("s3-access-key", "minioadmin", "S3 access key")
@@ -57,10 +63,13 @@ func LoadConfig() *Config {
 
 	// Bind flags to viper
 	viper.BindPFlag("PORT", pflag.Lookup("port"))
+	viper.BindPFlag("DB_TYPE", pflag.Lookup("db-type"))
 	viper.BindPFlag("MONGO_URI", pflag.Lookup("mongo-uri"))
+	viper.BindPFlag("POSTGRES_DSN", pflag.Lookup("postgres-dsn"))
 	viper.BindPFlag("REDIS_ADDR", pflag.Lookup("redis-addr"))
 	viper.BindPFlag("BROKER_TYPE", pflag.Lookup("broker-type"))
 	viper.BindPFlag("PUBSUB_MONGO_URI", pflag.Lookup("pubsub-mongo-uri"))
+	viper.BindPFlag("PUBSUB_POSTGRES_DSN", pflag.Lookup("pubsub-postgres-dsn"))
 	viper.BindPFlag("LOG_LEVEL", pflag.Lookup("log-level"))
 	viper.BindPFlag("S3_ENDPOINT", pflag.Lookup("s3-endpoint"))
 	viper.BindPFlag("S3_ACCESS_KEY", pflag.Lookup("s3-access-key"))
